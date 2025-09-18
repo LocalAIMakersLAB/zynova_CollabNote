@@ -14,14 +14,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # 회원가입 / 로그인 관련
 # ---------------------------
 
-def register_user(username, password, company_name, company_code, role="직원"):
-    """
-    회원가입 함수
-    - 같은 이메일(ID)이 있으면 실패
-    - 회사가 없으면 새로 생성
-    - 해당 회사의 첫 가입자는 자동으로 '대표' 역할 부여
-    - 비밀번호는 bcrypt 해싱 후 저장
-    """
+def register_user(username, password, company_name, company_code, role="employee"):
     # 사용자 중복 확인
     exists = supabase.table("users").select("*").eq("username", username).execute()
     if exists.data:
@@ -32,10 +25,12 @@ def register_user(username, password, company_name, company_code, role="직원")
     if error:
         return False, error
 
-    # 회사의 첫 유저라면 '대표'로 지정
-    company_users = supabase.table("users").select("*").eq("company_id", company_id).execute()
-    if not company_users.data:
-        role = "대표"
+    # 회사에 이미 ceo가 있는지 확인
+    ceo_exists = supabase.table("users").select("*").eq("company_id", company_id).eq("role", "ceo").execute()
+
+    # 만약 ceo가 이미 있는데 또 ceo로 가입하려 하면 막기
+    if ceo_exists.data and role == "ceo":
+        return False, "❌ 이미 대표가 존재하는 회사입니다."
 
     # 비밀번호 해싱
     hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -47,8 +42,8 @@ def register_user(username, password, company_name, company_code, role="직원")
         "company_id": company_id,
         "role": role
     }).execute()
-    return True, f"✅ 회원가입 성공! (역할: {role})"
 
+    return True, f"✅ 회원가입 성공! (역할: {role})"
 
 def get_user(username, password):
     """
