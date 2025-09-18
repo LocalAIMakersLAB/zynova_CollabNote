@@ -43,10 +43,9 @@ elif st.session_state.page == "register":
     company_name = st.text_input("회사명")
     company_code = st.text_input("회사 코드")
     role = st.radio("역할 선택", ["대표", "직원"], horizontal=True)
-    role_value = "admin" if role == "대표" else "employee"
     
     if st.button("가입하기"):
-        ok, msg = register_user(username, password, company_name, company_code, role_value)
+        ok, msg = register_user(username, password, company_name, company_code, role)
         if ok:
             st.success(msg)
             st.session_state.page = "login"

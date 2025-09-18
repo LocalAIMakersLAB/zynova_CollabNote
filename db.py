@@ -2,6 +2,8 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client
 import bcrypt
+from datetime import date
+
 
 # .env 불러오기
 load_dotenv()
@@ -13,8 +15,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ---------------------------
 # 회원가입 / 로그인 관련
 # ---------------------------
-
-def register_user(username, password, company_name, company_code, role="employee"):
+def register_user(username, password, company_name, company_code, role="직원"):
     # 사용자 중복 확인
     exists = supabase.table("users").select("*").eq("username", username).execute()
     if exists.data:
@@ -25,25 +26,33 @@ def register_user(username, password, company_name, company_code, role="employee
     if error:
         return False, error
 
-    # 회사에 이미 ceo가 있는지 확인
-    ceo_exists = supabase.table("users").select("*").eq("company_id", company_id).eq("role", "ceo").execute()
+    # 회사의 기존 유저들 확인
+    company_users = supabase.table("users").select("*").eq("company_id", company_id).execute()
 
-    # 만약 ceo가 이미 있는데 또 ceo로 가입하려 하면 막기
-    if ceo_exists.data and role == "ceo":
-        return False, "❌ 이미 대표가 존재하는 회사입니다."
+    if not company_users.data:
+        # 첫 가입자는 자동 ceo
+        role_value = "ceo"
+    else:
+        # 이미 ceo가 있는 경우 → 강제로 employee
+        ceo_exists = any(u["role"] == "ceo" for u in company_users.data)
+        if role == "대표":
+            if ceo_exists:
+                return False, "❌ 이미 해당 회사에 대표가 존재합니다."
+            role_value = "ceo"
+        else: 
+            role_value = "employee"
 
     # 비밀번호 해싱
     hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
-    # 사용자 삽입
     supabase.table("users").insert({
         "username": username,
         "password": hashed_pw,
         "company_id": company_id,
-        "role": role
+        "role": role_value
     }).execute()
 
-    return True, f"✅ 회원가입 성공! (역할: {role})"
+    return True, f"✅ 회원가입 성공! (역할: {'대표' if role_value == 'ceo' else '직원'})"
 
 def get_user(username, password):
     """
