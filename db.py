@@ -124,7 +124,6 @@ def insert_task(title, description, due_date, created_by):
     }).execute()
 
 def get_tasks(company_id):
-    # 회사 내 모든 요청
     res = supabase.table("tasks").select("*").execute()
     return res.data if res.data else []
 
@@ -134,3 +133,19 @@ def get_tasks_by_user(user_id):
 
 def update_task_status(task_id, status):
     supabase.table("tasks").update({"status": status}).eq("id", task_id).execute()
+
+def get_tasks_for_ceo(ceo_id):
+    """
+    대표님 담당 업무 조회
+    - pending: 아직 처리 안 된 업무
+    """
+    res = supabase.table("tasks").select("*")\
+        .eq("assigned_to", ceo_id).neq("status", "finished").execute()
+    return res.data if res.data else []
+
+
+# def mark_follow_up_notified(task_id):
+#     """
+#     후속 조치 알림 완료 표시
+#     """
+#     supabase.table("tasks").update({"follow_up_notified": True}).eq("id", task_id).execute()
