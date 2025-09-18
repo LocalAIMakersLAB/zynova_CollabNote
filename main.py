@@ -70,7 +70,7 @@ elif st.session_state.page == "main":
     # ------------------------
     # 직원 UI
     # ------------------------
-    if user["role"] == "staff":
+    if user["role"] == "employee":
         st.subheader("📌 새 요청 작성")
         title = st.text_input("제목")
         desc = st.text_area("설명")
