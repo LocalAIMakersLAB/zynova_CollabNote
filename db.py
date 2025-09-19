@@ -4,148 +4,91 @@ from supabase import create_client
 import bcrypt
 from datetime import date
 
-
 # .env 불러오기
 load_dotenv()
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ---------------------------
-# 회원가입 / 로그인 관련
-# ---------------------------
-def register_user(username, password, company_name, company_code, role="직원"):
-    # 사용자 중복 확인
-    exists = supabase.table("users").select("*").eq("username", username).execute()
-    if exists.data:
-        return False, "이미 존재하는 사용자 ID입니다."
+# -----------------------
+# 템플릿 불러오기
+# -----------------------
+def get_templates():
+    response = supabase.table("templates").select("*").execute()
+    if response.data:
+        return response.data
+    return []
 
-    # 회사 ID 확보
-    company_id, error = get_or_create_company(company_name, company_code)
-    if error:
-        return False, error
+# drafts -> 직원이 작성 중/제출 전 초안 저장
+# approvals -> 대표 inbox용 승인 요청 저장
 
-    # 회사의 기존 유저들 확인
-    company_users = supabase.table("users").select("*").eq("company_id", company_id).execute()
-
-    if not company_users.data:
-        # 첫 가입자는 자동 ceo
-        role_value = "ceo"
-    else:
-        # 이미 ceo가 있는 경우 → 강제로 employee
-        ceo_exists = any(u["role"] == "ceo" for u in company_users.data)
-        if role == "대표":
-            if ceo_exists:
-                return False, "❌ 이미 해당 회사에 대표가 존재합니다."
-            role_value = "ceo"
-        else: 
-            role_value = "employee"
-
-    # 비밀번호 해싱
-    hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-    supabase.table("users").insert({
-        "username": username,
-        "password": hashed_pw,
-        "company_id": company_id,
-        "role": role_value
+# -----------------------
+# 직원 Draft 관련
+# -----------------------
+def create_draft(creator_id: str, doc_type: str, filled: dict, missing: list, confirm_text: str):
+    """직원이 초안 생성"""
+    response = supabase.table("drafts").insert({
+        "creator": creator_id,
+        "type": doc_type,
+        "filled": filled,
+        "missing": missing,
+        "confirm_text": confirm_text,
+        "status": "editing"
     }).execute()
+    return response.data
 
-    return True, f"✅ 회원가입 성공! (역할: {'대표' if role_value == 'ceo' else '직원'})"
+def submit_draft(draft_id: str, title: str, summary: str, assignee: str, due_date: str):
+    """승인 요청 제출 → drafts 상태 업데이트 + approvals 생성"""
+    # 1) draft 상태 업데이트
+    supabase.table("drafts").update({"status": "submitted"}).eq("draft_id", draft_id).execute()
 
-def get_user(username, password):
-    """
-    로그인 함수
-    - 이메일(ID)로 사용자 조회
-    - 입력 비밀번호와 해싱된 비밀번호 비교
-    """
-    response = supabase.table("users").select("*").eq("username", username).execute()
-    if not response.data:
-        return None
-
-    user = response.data[0]
-    # 비밀번호 검증
-    if bcrypt.checkpw(password.encode("utf-8"), user["password"].encode("utf-8")):
-        return user
-    return None
-
-# ---------------------------
-# 회사 생성 또는 기존 회사 검증
-# ---------------------------
-
-def get_or_create_company(company_name, company_code):
-    """
-    회사명 + 회사코드로 회사 확인
-    - 이미 있으면 코드 일치 여부 확인
-    - 없으면 새로 생성
-    """
-    company = supabase.table("companies").select("*").eq("name", company_name).execute()
-    if company.data:
-        if company.data[0]["company_code"] == company_code:
-            return company.data[0]["id"], None
-        else:
-            return None, "❌ 회사 코드가 올바르지 않습니다."
-    else:
-        new_company = supabase.table("companies").insert({
-            "name": company_name,
-            "company_code": company_code
-        }).execute()
-        return new_company.data[0]["id"], None
-
-
-def get_companies():
-    """
-    모든 회사 목록 조회 (회원가입 시 자동완성 등에 사용)
-    """
-    response = supabase.table("companies").select("*").execute()
-    return response.data if response.data else []
-
-
-def get_user_by_id(user_id: int):
-    """
-    user_id로 사용자 조회
-    - 승인 흐름 등에서 유저 상세 조회할 때 사용
-    """
-    res = supabase.table("users").select("*").eq("id", user_id).execute()
-    return res.data[0] if res.data else None
-
-# ---------------------------
-# Task 관련
-# ---------------------------
-
-def insert_task(title, description, due_date, created_by):
-    supabase.table("tasks").insert({
+    # 2) approvals 생성
+    draft = supabase.table("drafts").select("*").eq("draft_id", draft_id).execute().data[0]
+    response = supabase.table("approvals").insert({
+        "draft_id": draft_id,
         "title": title,
-        "description": description,
-        "due_date": due_date.isoformat(),
-        "status": "pending",
-        "created_by": created_by
+        "summary": summary,
+        "confirm_text": draft["confirm_text"],
+        "assignee": assignee,
+        "due_date": due_date,
+        "status": "pending"
     }).execute()
+    return response.data
 
-def get_tasks(company_id):
-    res = supabase.table("tasks").select("*").execute()
-    return res.data if res.data else []
+# -----------------------
+# 대표 Approval 관련
+# -----------------------
+def get_pending_approvals(assignee_id: str):
+    """대표 Inbox: 승인 대기 문서 조회"""
+    response = supabase.table("approvals").select("*").eq("assignee", assignee_id).eq("status", "pending").execute()
+    return response.data
 
-def get_tasks_by_user(user_id):
-    res = supabase.table("tasks").select("*").eq("created_by", user_id).execute()
-    return res.data if res.data else []
+def update_approval_status(approval_id: str, status: str, reject_reason: str = None):
+    """대표가 승인/반려 처리"""
+    update_data = {"status": status, "decided_at": "now()"}
+    if status == "rejected":
+        update_data["reject_reason"] = reject_reason
 
-def update_task_status(task_id, status):
-    supabase.table("tasks").update({"status": status}).eq("id", task_id).execute()
+    response = supabase.table("approvals").update(update_data).eq("approval_id", approval_id).execute()
+    return response.data
 
-def get_tasks_for_ceo(ceo_id):
-    """
-    대표님 담당 업무 조회
-    - pending: 아직 처리 안 된 업무
-    """
-    res = supabase.table("tasks").select("*")\
-        .eq("assigned_to", ceo_id).neq("status", "finished").execute()
-    return res.data if res.data else []
+# -----------------------
+# 후속 일정 (Todo)
+# -----------------------
+def create_todo(approval_id: str, owner_id: str, title: str, due_at: str):
+    """승인 완료 시 후속 일정 생성"""
+    response = supabase.table("todos").insert({
+        "approval_id": approval_id,
+        "owner": owner_id,
+        "title": title,
+        "due_at": due_at,
+        "done": False
+    }).execute()
+    return response.data
 
-
-# def mark_follow_up_notified(task_id):
-#     """
-#     후속 조치 알림 완료 표시
-#     """
-#     supabase.table("tasks").update({"follow_up_notified": True}).eq("id", task_id).execute()
+def get_todos(owner_id: str):
+    """개인 Todo 조회"""
+    response = supabase.table("todos").select("*").eq("owner", owner_id).execute()
+    return response.data
