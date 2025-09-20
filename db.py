@@ -66,7 +66,7 @@ def get_templates() -> List[Dict[str, Any]]:
     res = supabase.table("templates").select("*").order("type").execute()
     return res.data or []
 
-def get_template_by_type(doc_type: str) -> Optional[Dict[str, Any]]:
+def get_templates_by_type(doc_type: str) -> Optional[Dict[str, Any]]:
     res = supabase.table("templates").select("*").eq("type", doc_type).limit(1).execute()
     return res.data[0] if res.data else None
 

@@ -1,5 +1,3 @@
-# 이번 스프린트에선 제거/비활성
-# (재구현 시: “자연어 1문장 → RAG로 문서유형/필수항목 추론 → 동적 폼/질문” 흐름으로 신규 설계)
 import streamlit as st
 import json
 import db
@@ -7,7 +5,7 @@ import potens_client
 from datetime import date
 
 def run_compose_page(user):
-    st.header("📝 직원 문서 업무 요청하기")
+    st.header("📝 새로운 문서 업무 요청하기")
 
     # 세션 상태 초기화
     if "compose_state" not in st.session_state:
@@ -78,11 +76,12 @@ def run_compose_page(user):
                 all_templates = db.get_templates() # 모든 템플릿 정보 가져오기
                 inferred_template = potens_client.infer_doc_type_and_fields(user_input, all_templates)
                 
-                state["template_info"] = db.get_templates(inferred_template['doc_type'])
+                # 오류 수정: get_templates() 대신 get_template_by_type() 호출
+                state["template_info"] = db.get_templates_by_type(inferred_template['doc_type'])
                 if state["template_info"]:
                     state["is_template_selected"] = True
                     state["chat_history"].append({"role": "bot", "message": f"확인했습니다. **{state['template_info']['type']}** 작성을 도와드릴게요."})
-                    state["current_draft_id"] = db.create_draft(user['user_id'], state["template_info"]['type'])
+                    # 초안 생성 함수 호출 위치를 변경
                     
                     # LLM이 필요한 필드를 질문하도록 유도
                     template_fields = state["template_info"]['fields']
@@ -115,11 +114,20 @@ def run_compose_page(user):
     # --- 컨펌 텍스트 생성 및 제출 ---
     if state["is_confirmed"]:
         if st.button("컨펌 텍스트 생성"):
-            confirm_text_prompt = potens_client.generate_confirm_text_prompt(state["filled_fields"])
-            confirm_text = potens_client.call_potens({"messages": [{"role": "user", "content": confirm_text_prompt}]})
+            confirm_text = potens_client.generate_confirm_text(state["filled_fields"])
             state["confirm_text"] = confirm_text
             st.session_state.confirm_text = confirm_text
-            
+
+            # 문서 초안 생성 함수 호출 위치 변경
+            # 문서가 모두 작성된 후에만 초안을 생성
+            db.create_draft(
+                user['user_id'],
+                state["template_info"]['type'],
+                state["filled_fields"],
+                extracted_data_payload['missing_fields'],
+                confirm_text
+            )
+
             st.subheader("📄 컨펌 텍스트 미리보기")
             st.info(confirm_text)
             
