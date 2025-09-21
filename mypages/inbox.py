@@ -3,7 +3,12 @@ import time
 import streamlit as st
 import db
 import potens_client
+<<<<<<< HEAD
 from datetime import datetime, timedelta, timezone
+=======
+from datetime import datetime, timedelta
+import pandas as pd
+>>>>>>> 2df280c906add83a9a03f84cd3af0f34e478cf26
 
 def app(user):
     st.title("📬 대표 승인함")
@@ -16,6 +21,7 @@ def app(user):
 
     message_placeholder = st.empty()
 
+<<<<<<< HEAD
     # 중복 알림 제거 + 한 번만 표시
     today = db.today_local_iso(9)
     due_today = db.get_due_todos_for_date(user["user_id"], today, tz_hours=9)
@@ -25,6 +31,8 @@ def app(user):
             st.markdown(f"- **{t['title']}** · 마감일: {str(t['due_at']).split('T')[0]}")
         st.divider()
 
+=======
+>>>>>>> 2df280c906add83a9a03f84cd3af0f34e478cf26
     # --- Todo 보기 버튼을 상단에 배치 ---
     if st.button("할 일(Todo) 보기"):
         st.session_state['show_todos'] = not st.session_state.get('show_todos', False)
@@ -52,11 +60,20 @@ def app(user):
                 with c1:
                     st.write(todo["title"])
                 with c2:
+<<<<<<< HEAD
                     st.write(todo["due_at"].split("T")[0] if "T" in str(todo["due_at"]) else todo["due_at"])
                 with c3:
                     if st.button("완료 처리", key=f"todo-done-btn-{todo['todo_id']}"):
                         db.set_todo_done(todo["todo_id"], True)
                         st.success(f"'{todo['title']}' 완료로 이동했습니다.")
+=======
+                    # 날짜만 보이게
+                    st.write(todo["due_at"].split("T")[0] if "T" in str(todo["due_at"]) else todo["due_at"])
+                with c3:
+                    if st.checkbox("완료", key=f"done-{todo['todo_id']}"):
+                        db.delete_todo(todo["todo_id"])
+                        st.success(f"'{todo['title']}' 완료! 목록에서 제거되었습니다.")
+>>>>>>> 2df280c906add83a9a03f84cd3af0f34e478cf26
                         st.rerun()
             # st.markdown("---")
 
@@ -83,7 +100,11 @@ def app(user):
 
             if approval["status"] == "대기중":
                 # Mock AI → 후속 업무 제안
+<<<<<<< HEAD
                 suggested_task = mock_ai_generate_task(title, confirm_text)
+=======
+                suggested_task = mock_ai_generate_task(title)
+>>>>>>> 2df280c906add83a9a03f84cd3af0f34e478cf26
                 
                 # 후속 업무 제안
                 st.markdown(f"👉 후속 업무: **{suggested_task}**")
@@ -97,6 +118,7 @@ def app(user):
 
                 # 승인 버튼
                 if st.button("✅ 승인", key=f"approve-{approval_id}"):
+<<<<<<< HEAD
                     KST = timezone(timedelta(hours=9))
                     due_at = datetime.combine(due_date, datetime.min.time(), tzinfo=KST).isoformat()
 
@@ -104,10 +126,15 @@ def app(user):
                     db.update_approval_status(approval_id, "승인완료")
 
                     # 2) 후속 할 일 생성 (제목은 기존 규칙 기반 혹은 원하는 로직 유지)
+=======
+                    db.update_approval_status(approval_id, "승인완료")
+
+>>>>>>> 2df280c906add83a9a03f84cd3af0f34e478cf26
                     db.create_todo(
                         approval_id=approval_id,
                         owner=user["user_id"],
                         title=suggested_task,
+<<<<<<< HEAD
                         due_at=due_at
                     )
 
@@ -122,12 +149,20 @@ def app(user):
                     with message_placeholder.container():
                         st.success(f"✅ 승인 완료!\n\n{alert_msg}\n마감일: **{due_date}**")
 
+=======
+                        due_at=datetime.combine(due_date, datetime.min.time()).isoformat()
+                    )
+
+                    with message_placeholder.container():
+                            st.success(f"✅ 승인 완료!\n\n후속 할 일: **{suggested_task}**\n마감일: **{due_date}**")
+>>>>>>> 2df280c906add83a9a03f84cd3af0f34e478cf26
                     time.sleep(2)
                     st.rerun()
 
                 # 반려 사유 입력 → 반려 버튼
                 reject_reason = st.text_input("반려 사유 입력", key=f"reason-{approval_id}")
                 if st.button("❌ 반려", key=f"reject-{approval_id}"):
+<<<<<<< HEAD
                     if not reject_reason.strip():
                         st.warning("반려 사유를 입력해주세요.")
                     else:
@@ -151,3 +186,24 @@ def mock_ai_generate_task(title: str, confirm_text: str = "") -> str:
     return "승인 후속 조치 확인"
 
 
+=======
+                    db.update_approval_status(approval_id, "반려", reject_reason)
+                    st.error("❌ 반려 완료!")
+                    st.rerun()
+
+
+# Mock AI 함수: 승인된 요청을 기반으로 후속 업무를 생성
+def mock_ai_generate_task(title: str) -> str:
+    """승인된 요청(title)을 기반으로 후속 업무를 가상 생성"""
+    if "연차" in title:
+        return "직원 연차계 제출 확인 및 휴가 일정 공유"
+    if "지출" in title or "구매" in title or "발주" in title:
+        return f"{title} 관련 송금 요청"
+    if "보고서" in title:
+        return f"{title} 관련 회계팀 서류 전달"
+    if "계약서" in title:
+        return f"{title} 원본 서류 보관 및 스캔"
+    
+    return "승인 후속 조치 확인"
+
+>>>>>>> 2df280c906add83a9a03f84cd3af0f34e478cf26

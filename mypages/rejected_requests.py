@@ -54,6 +54,7 @@ def run_rejected_requests_page(user):
                 }
                 st.success("재작성 준비가 되었습니다. 좌측 메뉴에서 '📝 새 문서 요청'으로 이동하세요.")    
                 
+
                 # # '재작성하기' 버튼을 누르면 새 문서 작성 페이지로 이동
                 # # 현재는 단순히 메시지만 표시하고, 실제 재작성 로직은 추후 구현 필요
                 # if st.button("재작성하기", key=f"re_compose_{request['approval_id']}"):

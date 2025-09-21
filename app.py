@@ -1,6 +1,7 @@
 import streamlit as st
 import time, json
 from db import register_profile, login_profile
+<<<<<<< HEAD
 from mypages import inbox, compose, rejected_requests, dashboard 
 from potens_client import generate_confirm_text, generate_questions
 
@@ -11,6 +12,19 @@ from potens_client import generate_confirm_text, generate_questions
 #     "반려된 문서 (/rejected)": rejected_requests
 #     # "대시보드 (/dashboard)": dashboard
 # }
+=======
+from mypages import inbox, compose, rejected_requests 
+from potens_client import generate_confirm_text, generate_questions
+
+
+PAGES = {
+    # 이제 compose는 라우팅에 포함시키지 않습니다.
+    "대표 승인함 (/inbox)": inbox,
+    "직원 문서 작성 (/compose)": compose,
+    "반려된 문서 (/rejected)": rejected_requests
+    # "대시보드 (/dashboard)": dashboard
+}
+>>>>>>> 2df280c906add83a9a03f84cd3af0f34e478cf26
 
 # 세션 초기화
 if "page" not in st.session_state:
@@ -77,6 +91,7 @@ def show_main():
     
     # 대표(rep)만 볼 수 있는 메뉴
     if user['role'] == 'rep':
+<<<<<<< HEAD
         page = st.sidebar.radio("대표 메뉴", ("📬 승인함", "📊 대시보드"))
         if page == "📬 승인함":
             st.sidebar.info("대표님용 문서 승인 처리 페이지입니다.")
@@ -84,6 +99,10 @@ def show_main():
         else:
             dashboard.app(user)
             st.sidebar.info("대표님용 문서 후속 처리 대시보드 페이지입니다.")
+=======
+        inbox.app(st.session_state.user)
+        st.sidebar.info("대표님용 문서 승인 처리 페이지입니다.")
+>>>>>>> 2df280c906add83a9a03f84cd3af0f34e478cf26
     else:
         # 직원은 사이드바 메뉴로 페이지 선택
         st.sidebar.info("직원용 문서 업무 페이지입니다.")

@@ -109,6 +109,7 @@ def run_compose_page(user):
                     state["last_questions"] = questions_payload.get('ask', [])
 
                     questions_text = "\n".join([q['question'] for q in questions_payload['ask']])
+
                     state["chat_history"].append({"role": "bot", "message": f"필수 항목을 파악 중입니다... {questions_text}"})
                 else:
                     state["chat_history"].append({"role": "bot", "message": "죄송합니다. 요청하신 문서 유형을 찾을 수 없습니다."})
@@ -120,6 +121,7 @@ def run_compose_page(user):
                 extracted_data_payload = potens_client.generate_questions(template_fields, state["filled_fields"]) # mock에선 질문 생성
                 state["last_missing_fields"] = extracted_data_payload.get('missing_fields', [])
                 state["last_questions"] = extracted_data_payload.get('ask', [])
+
 
                 # 추출된 데이터를 state에 업데이트 (실제 LLM 연동 시 추출된 JSON을 파싱해야 함)
                 # 현재 mock 함수는 질문을 반환하므로, 간단한 로직으로 대체
@@ -165,6 +167,7 @@ def run_compose_page(user):
             # (user_id 대신 이름을 보여주려면 별도 쿼리 필요)
             selected_rep = st.selectbox("승인자(대표) 선택", rep_ids, index=0)
 
+
             st.subheader("📄 컨펌 텍스트 미리보기")
             st.info(confirm_text)
             
@@ -178,6 +181,7 @@ def run_compose_page(user):
                         summary=confirm_text[:100] + "...",
                         assignee=selected_rep,
                         due_date=str(date.today()) 
+
                     )
                     st.success("✅ 승인 요청이 제출되었습니다! 대표님의 확인을 기다려주세요.")
                     st.session_state.compose_state = {}
