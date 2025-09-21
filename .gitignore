@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+.venv/
+.venv_ibm/
+env/
+ENV/
+.env
+# VSCode 설정
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+static/user
+.mp3
+.pdf
