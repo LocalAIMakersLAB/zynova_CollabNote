@@ -1,7 +1,7 @@
 import os, json, requests
 import streamlit as st
 from typing import Optional, List, Dict, Any, Union, Tuple
-from utils_llm import backoff_sleep, try_parse_json, normalize_keys, validate_keys  # 있으면 사용
+from mypages.utils_llm import backoff_sleep, try_parse_json, normalize_keys  # 있으면 사용
 
 # ========== Env ==========
 APP_MODE = os.getenv("APP_MODE", "live").lower()      # live | mock
@@ -85,17 +85,39 @@ def _parse_chat_style(res: dict, is_json: bool) -> Union[dict, str]:
         return res["choices"][0]["message"]["content"]
     except Exception:
         return ""
+    
+def _heuristic_doc_type(user_utterance: str, templates: List[dict]) -> str:
+    """키워드로 안전하게 doc_type 추정 (LLM 실패/모호 응답 대비)"""
+    text = (user_utterance or "").lower()
+    options = [t["type"] for t in templates] or ["품의"]
+
+    # 키워드 → 템플릿 이름 매핑 (원하는대로 추가/수정 가능)
+    rules = [
+        ("품의", ["품의"]),
+        ("견적", ["견적", "quotation", "quote"]),
+        ("연차", ["연차", "휴가", "annual leave"]),
+        ("지출", ["지출", "구매", "발주", "결재", "경비", "송금", "대금", "청구"]),
+    ]
+
+    for label, keys in rules:
+        if label in options and any(k in text for k in keys):
+            return label
+
+    # 그래도 못찾으면 첫 템플릿으로 폴백
+    return options[0]
 
 def _llm_call(
     prompt: Optional[str] = None,
     messages: Optional[List[Dict[str, str]]] = None,
-    is_json: bool = False
+    is_json: bool = False,
 ) -> Union[dict, str]:
     """
-    - APP_MODE=mock → mock marker 반환
-    - POTENS_API_STYLE=prompt → POST {POTENS_API_URL} with {"prompt": ...}
-    - POTENS_API_STYLE=chat   → POST {POTENS_API_URL}/chat with {"messages":[...], ...}
+    - APP_MODE=mock  → mock 마커 반환
+    - POTENS_API_STYLE=prompt → POST {POTENS_API_URL}             with {"prompt": ...}
+    - POTENS_API_STYLE=chat   → POST {POTENS_API_URL or */chat* } with {"messages":[...]}
+    - 응답 스키마 자동 감지: LLM담당자형({"message":...}) / 우리형({"choices":[...],"output":...})
     """
+    # 0) 모드/환경 체크
     if APP_MODE == "mock":
         st.info("APP_MODE=mock: LLM 호출 대신 Mock 응답을 사용합니다.")
         return {"__error__": "APP_MODE=mock"} if is_json else "[MOCK]"
@@ -104,40 +126,58 @@ def _llm_call(
         st.error("POTENS_API_URL 또는 POTENS_API_KEY 가 설정되지 않았습니다. Mock으로 동작합니다.")
         return {"__error__": "API Key not configured"} if is_json else "[MOCK]"
 
-    # 공통 파라미터(벤더별로 무시될 수 있음)
+    # 1) 공통 파라미터
     params = {
         "temperature": float(os.getenv("POTENS_TEMPERATURE", "0.2")),
         "top_p": float(os.getenv("POTENS_TOP_P", "0.9")),
         "max_tokens": int(os.getenv("POTENS_MAX_TOKENS", "800")),
     }
 
-    if POTENS_API_STYLE == "prompt":
+    # 2) URL 보정 + payload 구성
+    style = POTENS_API_STYLE or "chat"
+    base = (POTENS_API_URL or "").rstrip("/")
+
+    if style == "prompt":
         if not prompt:
             return {} if is_json else ""
-        url = POTENS_API_URL  # ex: https://ai.potens.ai/api/chat (LLM담당자 버전은 루트에 바로 POST)
+        url = base  # LLM담당자 버전은 루트에 바로 POST
         payload = {**params, "prompt": prompt}
-        res, err = _http_post_json(url, payload)
-        if err or not isinstance(res, dict):
+    else:
+        # chat(default): 이미 /chat로 끝나있으면 그대로, 아니면 붙인다.
+        url = base if base.endswith("/chat") else (base + "/chat")
+        if not messages:
             return {} if is_json else ""
-        return _parse_prompt_style(res, is_json)
+        payload = {**params, "messages": messages}
 
-    # default: chat
-    if not messages:
-        return {} if is_json else ""
-    url = POTENS_API_URL.rstrip("/") + "/chat"
-    payload = {**params, "messages": messages}
+    # 3) 호출
     res, err = _http_post_json(url, payload)
     if err or not isinstance(res, dict):
         return {} if is_json else ""
-    return _parse_chat_style(res, is_json)
+
+    # 4) 응답 스키마 자동 파싱
+    #   - LLM담당자 스타일: {"message": "..."} (코드펜스 포함 가능)
+    if "message" in res and not res.get("choices"):
+        return _parse_prompt_style(res, is_json)
+
+    #   - 우리 스타일: {"output": ..., "choices":[{"message":{"content":"..."}}]}
+    if res.get("choices") or "output" in res:
+        return _parse_chat_style(res, is_json)
+
+    #   - 예외: 둘 다 아니면 안전 폴백
+    if is_json:
+        # 가능한 텍스트 필드 추출 후 JSON 시도
+        text = res.get("message") or res.get("output") or ""
+        try:
+            return json.loads(text) if text else {}
+        except Exception:
+            return {}
+    else:
+        return (res.get("message") or res.get("output") or "").strip()
+
 
 # ========== 기능 함수들 ==========
 # 1) 템플릿 분류
 def infer_doc_type(user_utterance: str, templates: List[dict]) -> str:
-    """
-    LLM담당자 함수 호환: 문자열 타입만.
-    Chat 스타일에서는 system/user 합성으로 동일하게 동작.
-    """
     options = [t["type"] for t in templates]
     prompt = f"""
 ## 역할: 직원 요청을 올바른 서식으로 매핑하는 어시스턴트
@@ -150,21 +190,17 @@ def infer_doc_type(user_utterance: str, templates: List[dict]) -> str:
         out = _llm_call(prompt=prompt, is_json=False)
     else:
         out = _llm_call(messages=[{"role":"user","content":prompt}], is_json=False)
-    doc = str(out).strip()
-    # 후보 미스매치 보정
-    if doc not in options:
-        low = doc.lower()
-        cand = next((t for t in options if t.lower()==low), options[0] if options else "품의")
-        return cand
+
+    doc = str(out).strip() if out else ""
+    # LLM 결과가 비었거나 후보에 없으면 휴리스틱으로 보정
+    if not doc or doc not in options:
+        return _heuristic_doc_type(user_utterance, templates)
     return doc
 
 def infer_doc_type_and_fields(user_utterance: str, templates: List[dict]) -> dict:
-    """
-    우리 함수 호환: {"doc_type": str, "required": [str]}
-    """
     if not templates:
         return {"doc_type": "품의", "required": []}
-    # chat 모드에 최적화된 프롬프트
+
     context = [{"type": t["type"], "required": t["fields"].get("required", [])} for t in templates][:20]
     prompt = (
         "당신은 문서 템플릿 어시스턴트입니다.\n"
@@ -174,6 +210,7 @@ def infer_doc_type_and_fields(user_utterance: str, templates: List[dict]) -> dic
         f"템플릿 후보(요약): {context}\n"
         '출력 예: {"doc_type": "품의", "required": ["금액","근거","기한","승인선"]}'
     )
+
     if POTENS_API_STYLE == "prompt":
         res = _llm_call(prompt=prompt, is_json=True)
     else:
@@ -181,16 +218,20 @@ def infer_doc_type_and_fields(user_utterance: str, templates: List[dict]) -> dic
 
     obj = res if isinstance(res, dict) else {}
     obj = normalize_keys(obj) if 'normalize_keys' in globals() else obj
-    if not obj or not obj.get("doc_type"):
-        # 폴백: infer_doc_type 만이라도
-        t = infer_doc_type(user_utterance, templates)
-        req = next((x["fields"].get("required", []) for x in templates if x["type"] == t), [])
-        return {"doc_type": t, "required": req}
+
+    doc_type = obj.get("doc_type")
+    if not doc_type:
+        # 완전 실패 → 휴리스틱
+        doc_type = _heuristic_doc_type(user_utterance, templates)
+
     # 템플릿 존재성 보정
-    if not any(t["type"] == obj["doc_type"] for t in templates):
-        cand = next((t["type"] for t in templates if t["type"].lower()==str(obj["doc_type"]).lower()), templates[0]["type"])
-        obj["doc_type"] = cand
-    return obj
+    if not any(t["type"] == doc_type for t in templates):
+        # 대소문자 보정 후에도 없으면 휴리스틱
+        cand = next((t["type"] for t in templates if t["type"].lower() == str(doc_type).lower()), None)
+        doc_type = cand or _heuristic_doc_type(user_utterance, templates)
+
+    required = next((x["fields"].get("required", []) for x in templates if x["type"] == doc_type), [])
+    return {"doc_type": doc_type, "required": required}
 
 # 2) 초발화 분석 + 질문 (LLM담당자 함수)
 def analyze_request_and_ask(user_utterance: str, template: dict) -> dict:
@@ -348,3 +389,26 @@ def generate_rejection_note(rejection_memo: str, creator_name: str, doc_title: s
     else:
         out = _llm_call(messages=[{"role":"user","content":prompt}], is_json=False)
     return str(out).strip()
+
+# --- Quick debug helper ---
+def debug_llm_status():
+    return {
+        "APP_MODE": os.getenv("APP_MODE"),
+        "POTENS_API_STYLE": os.getenv("POTENS_API_STYLE"),
+        "POTENS_API_URL": os.getenv("POTENS_API_URL"),
+        "HAS_API_KEY": bool(os.getenv("POTENS_API_KEY")),
+    }
+
+def debug_llm_ping():
+    """엔드포인트 스타일별 최소 호출로 실제 응답을 확인"""
+    try:
+        if os.getenv("POTENS_API_STYLE","chat").lower() == "prompt":
+            payload = {"prompt": "ping"}
+            r = requests.post(os.getenv("POTENS_API_URL"), headers=HEADERS, json=payload, timeout=(6,12))
+        else:
+            payload = {"messages":[{"role":"user","content":"ping"}]}
+            url = os.getenv("POTENS_API_URL").rstrip("/") + "/chat"
+            r = requests.post(url, headers=HEADERS, json=payload, timeout=(6,12))
+        return {"status": r.status_code, "body": r.text[:500]}
+    except Exception as e:
+        return {"error": str(e)}

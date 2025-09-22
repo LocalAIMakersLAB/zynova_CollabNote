@@ -1,8 +1,9 @@
 import streamlit as st
 import time, json
 from db import register_profile, login_profile
-from mypages import inbox, compose, rejected_requests, dashboard 
+from mypages import inbox, compose, rejected_requests, dashboard , utils_llm
 from potens_client import generate_confirm_text, generate_questions
+import potens_client
 
 # PAGES = {
 #     # 이제 compose는 라우팅에 포함시키지 않습니다.
@@ -89,7 +90,11 @@ def show_main():
     else:
         # 직원은 사이드바 메뉴로 페이지 선택
         st.sidebar.info("직원용 문서 업무 페이지입니다.")
-        
+        with st.sidebar.expander("🛠 LLM 디버그"):
+            st.json(potens_client.debug_llm_status())
+            if st.button("Ping LLM"):
+                st.json(potens_client.debug_llm_ping())
+
         selected_page = st.sidebar.radio(
             "메뉴를 선택해주세요.",
             ("📝 새 문서 요청", "❌ 반려된 문서")
@@ -104,6 +109,19 @@ def show_main():
         st.session_state.user = None
         st.session_state.page = "login"
         st.rerun()
+        
+    # # 로그아웃을 하면 채팅이 남지 않는 버전
+    # if st.sidebar.button("로그아웃"):
+    #     for k in [
+    #         "compose_state", "compose_prefill",
+    #         "chat_history", "filled_fields", "is_confirmed",
+    #         "current_draft_id", "confirm_text"
+    #     ]:
+    #         if k in st.session_state:
+    #             del st.session_state[k]
+    #     st.session_state.user = None
+    #     st.session_state.page = "login"
+    #     st.rerun()
 
 # --------- 엔트리 분기 ---------
 if st.session_state.page == "login" and not st.session_state.user:

@@ -102,18 +102,26 @@ def run_compose_page(user):
                     state["chat_history"].append({"role": "bot", "message": f"확인했습니다. **{state['template_info']['type']}** 작성을 도와드릴게요."})
 
                     template_fields = state["template_info"]['fields']
-                    questions_payload = potens_client.generate_questions(template_fields, state["filled_fields"])
+                    with st.spinner("필수 항목을 파악 중입니다..."):
+                        questions_payload = potens_client.generate_questions(template_fields, {})
 
                     # ★ 최초 질문/누락도 저장
                     state["last_missing_fields"] = questions_payload.get('missing_fields', [])
                     state["last_questions"] = questions_payload.get('ask', [])
 
-                    questions_text = "\n".join([q['question'] for q in questions_payload['ask']])
-
-                    state["chat_history"].append({"role": "bot", "message": f"필수 항목을 파악 중입니다... {questions_text}"})
-                else:
-                    state["chat_history"].append({"role": "bot", "message": "죄송합니다. 요청하신 문서 유형을 찾을 수 없습니다."})
-            
+                    ask_list = state["last_questions"]
+                    if ask_list:
+                        questions_text = "\n".join([q['question'] for q in ask_list])
+                        state["chat_history"].append({"role":"bot","message": f"필수 항목을 파악했어요:\n{questions_text}\n\n예: `금액:120만원, 기한:2025-09-25` 처럼 입력하셔도 돼요."})
+                    else:
+                        # Fallback: required 목록을 직접 안내
+                        req = questions_payload.get("required_fields", [])
+                        pretty = ", ".join(req) if req else "(필수 항목 없음)"
+                        state["chat_history"].append({
+                            "role":"bot",
+                            "message": f"필수 항목 질문을 생성하지 못했어요. 아래 항목을 `키:값` 형태로 알려주세요.\n- 필요한 항목: {pretty}\n\n예: `금액:120만원, 기한:2025-09-25`"
+                        })
+                        
             # --- 문서 필드 채우기 ---
             else:
                 # LLM이 JSON 형식으로 필드 값을 추출
