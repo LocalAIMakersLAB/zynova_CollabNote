@@ -1,4 +1,5 @@
 # mypages/compose.py
+from datetime import date
 from typing import Dict, List, Any, Optional
 import streamlit as st
 import db
@@ -7,6 +8,7 @@ from potens_client import (
     analyze_request_and_ask,
     generate_confirm_text,
 )
+import potens_client
 
 # ---------------------------
 # Helpers
@@ -64,7 +66,7 @@ def _next_remaining_key(template_fields: List[str], filled_fields: Dict[str, Any
 def run_compose_page(user: Dict[str, Any]):
     st.header("📝 새 문서 요청")
 
-    # 초기화 (그대로)
+    # 초기화 부분
     if "compose_state" not in st.session_state or st.session_state.get("new_request", False):
         st.session_state.compose_state = {
             "stage": "initial",
@@ -78,13 +80,15 @@ def run_compose_page(user: Dict[str, Any]):
             "prefill": None,
             "confirm_rendered": False,
         }
+        # ✅ 여기서는 new_request만 False로 되돌림
         st.session_state.new_request = False
 
-        prefill = st.session_state.pop("compose_prefill", None)
-        if prefill:
-            st.session_state.compose_state["prefill"] = prefill
+    # ✅ 성공 여부 flag는 compose_state와 분리
+    if "last_submit_success" not in st.session_state:
+        st.session_state.last_submit_success = False
 
     state = st.session_state.compose_state
+
 
     # --- 기존 대화 렌더 (UI만 교체) ---
     for msg in state["chat_history"]:
@@ -262,11 +266,15 @@ def run_compose_page(user: Dict[str, Any]):
         # ---------------- confirm: (이전 버전 문제) 사용자 입력 없어도 자동 렌더가 되도록 아래로 이동 ----------------
         # (의도적으로 비워둠; 아래의 '입력 외 영역'에서 처리)
 
-    # ---------------- 입력 유무와 무관하게 confirm 자동 렌더 ----------------
+    # ---------------- confirm 단계: 최종 보고서 + 버튼 UI ----------------
     if state["stage"] == "confirm" and not state.get("confirm_rendered"):
         with st.spinner("최종 보고서를 생성 중입니다..."):
             doc_type = state["template"]["type"] if state.get("template") else "문서"
             final_text = generate_confirm_text(state["filled_fields"], doc_type)
+
+            # confirm_text를 state에 저장 (DB 제출용)
+            state["confirm_text"] = final_text
+
             response = (
                 "모든 정보가 수집되었습니다. 아래 내용으로 제출할까요?\n\n"
                 "---\n"
@@ -274,41 +282,104 @@ def run_compose_page(user: Dict[str, Any]):
                 "---\n\n"
                 "하단 버튼을 눌러주세요."
             )
-            state["chat_history"].append({"role": "assistant", "content": response})
-            state["stage"] = "submitted"
+            st.text_area("📄 최종 보고서", response, height=300)
             state["confirm_rendered"] = True
-        st.rerun()
 
-    # ---------------- submitted: 버튼 UI ----------------
-    if state["stage"] == "submitted":
-        col1, col2, col3 = st.columns([1,1,1])
+    # ---------------- 버튼 UI (항상 confirm일 때는 보이도록) ----------------
+    if state["stage"] == "confirm":
+        col1, col2, col3 = st.columns([1, 1, 1])
+        print(f"[DEBUG] stage={state['stage']}, confirm_rendered={state.get('confirm_rendered')}")
+        
+        # ✅ 항상 edit_result 초기화
+        edit_result = {}
+
         with col1:
             if st.button("🔁 처음부터 다시"):
                 st.session_state.new_request = True
                 st.rerun()
+                
         with col2:
             if st.button("✏️ 일부 수정하기"):
-                template_fields = _template_fields_list(state["template"])
-                remaining = [f for f in template_fields if f not in state["filled_fields"]]
-                state["questions_to_ask"] = [{"key": k, "question": f"'{k}' 값을 알려주세요."} for k in remaining]
-                if state["questions_to_ask"]:
-                    nxt = state["questions_to_ask"].pop(0)
-                    state["last_asked"] = nxt["key"]
-                    state["chat_history"].append({"role": "assistant", "content": "수정할 내용을 이어서 입력해주세요."})
-                    state["chat_history"].append({"role": "assistant", "content": nxt["question"]})
-                    state["stage"] = "gathering"
-                    state["confirm_rendered"] = False
-                else:
-                    state["stage"] = "confirm"
-                    state["confirm_rendered"] = False
-                st.rerun()
-        with col3:
-            if st.button("🚀 승인 요청 제출"):
-                # TODO: 실제 저장 로직 연결
-                # req_id = db.create_request(...)
-                st.success("✅ 승인 요청이 성공적으로 준비되었습니다! (DB 저장 루틴 연결 필요)")
-                st.balloons()
-                st.session_state.new_request = True
+                st.session_state["edit_mode"] = True
+                st.session_state["edit_target"] = None
+                st.session_state["edit_message"] = "수정할 항목을 말씀해주세요. (예: 승인자 이름을 김이준으로 바꿔줘)"
                 st.rerun()
 
+            # edit_mode일 때만 동작
+            if st.session_state.get("edit_mode"):
+                st.info(st.session_state.get("edit_message", ""))
+
+                user_edit_input = st.text_input("✏️ 수정 입력", key="edit_input")
+                edit_result = {}
+
+                if user_edit_input:
+                    edit_prompt = f"""
+                    사용자가 문서 내용을 수정하려 합니다. 
+
+                    ## 현재 데이터
+                    {state['filled_fields']}
+
+                    ## 사용자 요청
+                    "{user_edit_input}"
+
+                    ## 출력 규칙
+                    - 반드시 JSON만 출력하세요. (설명, 코드블록, 주석 금지)
+                    - 형식: {{"key": "필드명", "value": "새 값"}}
+                    """
+                    edit_raw = potens_client._call_potens_llm(edit_prompt)
+
+                    import re, json
+                    if edit_raw:
+                        match = re.search(r"\{.*\}", edit_raw, re.S)
+                        if match:
+                            try:
+                                edit_result = json.loads(match.group(0))
+                            except json.JSONDecodeError:
+                                st.error("❌ 수정 결과 파싱 실패. 다시 시도해주세요.")
+                                edit_result = {}
+
+                # --- 수정 적용 ---
+                if edit_result and "key" in edit_result:
+                    key = edit_result["key"]
+                    val = edit_result["value"]
+                    state["filled_fields"][key] = val
+                    st.success(f"✅ '{key}' 값이 '{val}'(으)로 수정되었습니다.")
+                    st.session_state["edit_mode"] = False
+                    state["stage"] = "confirm"
+                    state["confirm_rendered"] = False
+                    st.rerun()
+
+        with col3:
+            if st.button("🚀 승인 요청 제출"):
+                print(f"[DEBUG] submit clicked, user={user['user_id']}")
+                draft_id = db.create_draft(
+                    user['user_id'],
+                    state["template"]["type"],
+                    state["filled_fields"],
+                    state.get("missing_fields", []),
+                    state["confirm_text"]
+                )
+                print(f"[DEBUG] draft_id={draft_id}")
+                if draft_id:
+                    # 대표 ID 가져오기
+                    rep_id = db.get_rep_user_id()
+                    print(f"[DEBUG] rep_id={rep_id}")
+                    db.submit_draft(
+                        draft_id=draft_id,
+                        confirm_text=state["confirm_text"],
+                        assignee=rep_id,
+                        due_date=str(date.today()),
+                        creator_id=user['user_id']
+                    )
+                    st.success("✅ 승인 요청이 제출되었습니다!")
+                    st.session_state.last_submit_success = True
+                    st.session_state.new_request = True
+                    st.rerun()
+                else:
+                    st.error("DB 저장에 실패했습니다.")
+
+    # ---------------- 제출 성공 메시지 유지 ----------------
+    if st.session_state.get("last_submit_success"):
+        st.success("✅ 승인 요청이 제출되었습니다!")
+        st.session_state["last_submit_success"] = False
 

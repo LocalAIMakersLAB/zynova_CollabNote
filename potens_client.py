@@ -1,7 +1,10 @@
 import os, json, requests
 import streamlit as st
 from typing import Optional, List, Dict, Any, Union, Tuple
-from utils_llm import backoff_sleep, try_parse_json, normalize_keys, validate_keys  # 있으면 사용
+from mypages.utils_llm import backoff_sleep, try_parse_json, normalize_keys, validate_keys  # 있으면 사용
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ========== Env ==========
 APP_MODE = os.getenv("APP_MODE", "live").lower()      # live | mock
@@ -138,16 +141,23 @@ def infer_doc_type(user_utterance: str, templates: list[dict]) -> str:
     doc_type = _call_potens_llm(prompt)
     return doc_type.strip()
 
-# 2) 초발화 분석 + 질문 (LLM담당자 함수)
 def analyze_request_and_ask(user_utterance: str, template: dict) -> dict:
     prompt = f"""
-    ## 역할 및 목표
-    당신은 직원의 문서 작성을 돕는 꼼꼼한 AI 어시스턴트입니다.
-    당신의 목표는 사용자의 첫 발화에서 가능한 모든 정보를 추출하고, 누락된 필수 필드에 대해 명확한 질문을 생성하는 것입니다.
+    ## 역할
+    당신은 회사의 다양한 행정 문서(품의서, 출장계, 기안서 등)를 작성하도록 돕는 AI 어시스턴트입니다.
 
+    ## 목표
+    1. 사용자의 첫 발화에서 추출 가능한 모든 정보를 반드시 `filled_fields`에 채워 넣으세요.
+       - 숫자, 금액, 날짜, 기간, 인원수 등은 직접 계산하거나 변환해 기록하세요.
+       - 예: "12월 15일부터 18일까지 출장" → 시작일=2025-12-15, 종료일=2025-12-18, 총일수=4
+       - 예: "100만원 필요" → 금액=1000000
+    2. 이미 채워진 필드는 다시 질문하지 않습니다.
+    3. 누락된 필드만 `missing_fields`에 나열하고, 그에 맞는 자연스러운 질문(`ask`)을 생성하세요.
+    4. 질문은 친근하고 정중한 대화체로 작성합니다.
+       - 예: "출장 사유를 말씀해 주실 수 있을까요?" 
+       - 예: "해당 금액은 언제까지 필요하신가요?"
 
-
-    ## 문서 템플릿 정보
+    ## 문서 템플릿
     - 종류: "{template['type']}"
     - 필수 필드: {template['fields']}
 
@@ -155,31 +165,32 @@ def analyze_request_and_ask(user_utterance: str, template: dict) -> dict:
     {template.get('guide_md', '가이드 없음')}
 
     ## 출력 규칙
-    
-    - 질문은 절대 "‘필드명’ 값을 알려주세요" 형식을 쓰지 마세요.
-    - 질문은 항상 친근하고 자연스러운 대화체 문장으로 작성하세요.
-    - 예: "사유를 말씀해 주실 수 있을까요?", "언제까지 필요하신가요?" 
-    - `filled_fields`: 사용자의 발화에서 추출한 값들을 채워주세요.
-    - `missing_fields`: 값이 아직 비어있는 필드의 키 목록을 알려주세요.
-    - `ask`: 누락된 각 필드에 대해 질문을 생성해주세요.
-    - 질문은 친근하고 자연스러운 한국어 대화체로 작성하세요.
-    - 단, 업무 문맥을 해치지 않도록 정중한 어투를 유지하세요.
-    - 예: "사유를 알려주실 수 있을까요?" / "언제까지 필요하신가요?"
+    - 출력은 반드시 **순수 JSON**만 반환하세요. 설명 문장은 포함하지 마세요.
+    - `filled_fields`: 사용자의 발화에서 추출/계산한 값 (dict)
+    - `missing_fields`: 여전히 비어 있는 필드 목록 (list)
+    - `ask`: 각 누락된 필드에 대해 자연스러운 질문 배열 (list of objects)
+      - 각 질문은 {{ "key": "필드명", "question": "자연스러운 질문" }} 형식이어야 합니다.
+    - 날짜는 ISO8601 형식("YYYY-MM-DD") 권장.
 
-    ## JSON 출력 형식
+    ## 출력 예시
     {{
-      "filled_fields": {{ "필드키": "추출한 값", ... }},
-      "missing_fields": ["누락된 필드키1", "누락된 필드키2", ...],
+      "filled_fields": {{
+        "금액": "1000000",
+        "사유": "A 프로젝트 장비 구매"
+      }},
+      "missing_fields": ["근거", "기한", "승인선"],
       "ask": [
-        {{ "key": "누락된 필드키1", "question": "자연스럽게 만든 질문" }},
-        {{ "key": "누락된 필드키2", "question": "자연스럽게 만든 질문" }}
+        {{ "key": "근거", "question": "이 품의의 근거가 되는 자료가 있으신가요?" }},
+        {{ "key": "기한", "question": "언제까지 이 품의가 필요하신가요?" }},
+        {{ "key": "승인선", "question": "승인자는 누구로 지정하시겠어요?" }}
       ]
     }}
 
-    ## 사용자 최초 발화
+    ## 사용자 발화
     "{user_utterance}"
     """
     return _call_potens_llm(prompt, is_json=True)
+
 
 # def infer_doc_type_and_fields(user_utterance: str, templates: List[dict]) -> dict:
 #     """
@@ -254,23 +265,35 @@ def analyze_request_and_ask(user_utterance: str, template: dict) -> dict:
 #         ]
 #     }
 
-# 3) 컨펌 텍스트
 def generate_confirm_text(filled_data: dict, template_type: str) -> str:
     prompt = f"""
     ## 역할
-    당신은 전문적인 비즈니스 문서 작성가입니다. 당신의 임무는 정형화된 데이터를 바탕으로, 관리자가 승인을 위해 검토할 간결하고 공식적인 보고서를 작성하는 것입니다.
+    당신은 회사 행정 문서를 정리해 대표에게 전달하는 비즈니스 보고서 작성자입니다.
+
+    ## 문서 종류
+    {template_type}
 
     ## 원본 데이터
     {json.dumps(filled_data, ensure_ascii=False, indent=2)}
 
     ## 작성 규칙
-    - 6~10개 문장 내외의 공식적인 보고서 텍스트를 작성하세요.
-    - 문체는 정중하고 전문적이어야 합니다.
-    - 금액, 기한, 핵심 사유 등 의사결정에 중요한 부분은 마크다운 굵은 글씨(`**텍스트**`)로 강조하세요.
-    - 만약 값이 비어있는 항목이 있다면, `[입력 필요]` 라고 명확하게 표시하세요.
-    - 출력은 마크다운 형식의 본문 텍스트만 포함해야 합니다.
+    1. 문서 종류에 맞는 **자연스러운 제목**으로 시작하세요. (예: "출장 품의 보고" / "연차 신청 보고")
+    2. 전체를 4~7문장 정도로 간결하게 작성하세요. (문서 성격에 따라 길이 조절)
+    3. 금액, 기한, 핵심 사유, 인원수 등 중요한 값은 마크다운 굵은 글씨(`**텍스트**`)로 강조하세요.
+    4. 값이 비어있다면 본문 중간에 [입력 필요]로 표시하되, 마지막에 “추가로 필요한 정보” 섹션을 만들어 다시 안내하세요.
+    5. 출력은 마크다운 형식의 본문 텍스트만 포함해야 합니다.
+
+    ## 출력 예시 (출장계)
+    ### 출장 품의 보고
+    본 보고서는 **2025년 12월 15일**부터 **12월 18일**까지 진행될 출장에 관한 승인 요청입니다.  
+    출장 인원은 **3명**이며, 출장 목적은 [입력 필요]입니다.  
+    예상 소요 비용은 **150만원**으로 산정됩니다.  
+    상기 일정과 비용을 바탕으로 승인을 요청드립니다.
+
+    **추가로 필요한 정보:** 출장 목적
     """
     return _call_potens_llm(prompt)
+
 
 # 4) 승인용 요약(LLM담당자)
 def generate_approval_summary(confirm_text: str) -> dict:
@@ -300,42 +323,57 @@ def generate_approval_summary(confirm_text: str) -> dict:
 def generate_next_step_alert(approved_data: dict) -> str:
     prompt = f"""
     ## 상황
-    '{approved_data.get('creator_name', '담당 직원')}' 직원이 제출한 '{approved_data.get('type', '요청')}' 요청이 방금 승인되었습니다.
+    '{approved_data.get('creator_name', '담당 직원')}'이(가) 제출한 '{approved_data.get('type', '요청')}' 요청이 방금 승인되었습니다.
+    요청 기한: {approved_data.get('due_date', '미정')}
+
     일반적인 업무 절차에 따라, 가장 논리적인 다음 후속 조치는 무엇인가요?
     
     ## 임무
-    방금 요청을 승인한 관리자를 위해, 승인 사실과 다음 후속 조치를 알려주는 짧은 한 문장의 알림 메시지를 생성하세요.
+    - 승인 사실을 알리는 짧은 문장을 작성하세요.
+    - 그 뒤, 일반적인 후속 조치를 한 문장으로 안내하세요.
+    - 메시지는 최대 두 문장 이내로 유지하세요.
 
     ## 예시
     입력: 김민준 직원의 출장 경비 보고서.
-    출력: 출장 경비 보고서 승인을 완료했습니다. 회계팀에 김민준 님의 출장비 지급을 요청해야 합니다.
+    출력
+    - 출장 경비 보고서 승인을 완료했습니다. **12월 20일까지** 회계팀에 김민준 님의 출장비 지급해야 합니다.
+    - 연차 신청을 승인했습니다. 인사팀 근태 기록에 반영해 주세요.
     """
     return _call_potens_llm(prompt)
 
 # 6) 컨펌 텍스트 검증(LLM담당자)
 def validate_confirm_text(confirm_text: str, required_fields: list) -> dict:
-    """생성된 컨펌 텍스트에 빈 값이나 논리적 오류가 있는지 최종 검증합니다."""
-    
     prompt = f"""
-    ## 역할: 당신은 매우 꼼꼼한 문서 검수관입니다.
-    ## 임무: 아래 보고서 본문을 읽고, '필수 항목'이 모두 채워졌는지, 논리적 오류는 없는지 검증하세요.
+    ## 역할
+    당신은 매우 꼼꼼한 행정 문서 검수관입니다.
 
-    ## 보고서 본문:
+    ## 임무
+    아래 보고서 본문을 검토하여:
+    1. '필수 항목'이 모두 채워졌는지 확인하세요.
+    2. 논리적 오류(예: 종료일이 시작일보다 빠른 경우, 금액이 음수/0인 경우 등)가 있는지 확인하세요.
+
+    ## 보고서 본문
     {confirm_text}
 
-    ## 필수 항목 목록:
+    ## 필수 항목 목록
     {required_fields}
 
-    ## 출력 규칙:
-    - 만약 본문에 `[입력 필요]`와 같은 빈 칸이 있거나, 필수 항목 내용이 비어있다면 `missing` 목록에 해당 항목을 추가하세요.
-    - 만약 내용에 논리적 모순이 있다면 `suggestion`에 수정 제안을 담아주세요.
+    ## 출력 규칙
+    - 본문에 `[입력 필요]` 또는 필수 항목 값이 비어 있으면 `missing`에 해당 항목명을 넣으세요.
+    - 논리적 오류가 있으면 `suggestion`에 수정 제안을 넣으세요.
     - 문제가 없다면 `is_valid`를 true로 설정하세요.
+    - suggestion이 필요 없다면 빈 문자열("")을 넣으세요.
     - 반드시 JSON 형식으로만 응답하세요.
-    
-    ## JSON 출력 형식:
-    {{ "is_valid": boolean, "missing": ["누락된 필드명"], "suggestion": "수정 제안 문구" }}
+
+    ## JSON 출력 형식
+    {{
+      "is_valid": true/false,
+      "missing": ["누락된 필드명"],
+      "suggestion": "수정 제안 문구 또는 빈 문자열"
+    }}
     """
     return _call_potens_llm(prompt, is_json=True)
+
 
 # 7) 반려 안내문(LLM담당자)
 def generate_rejection_note(rejection_memo: str, creator_name: str, doc_title: str) -> str:
@@ -343,8 +381,11 @@ def generate_rejection_note(rejection_memo: str, creator_name: str, doc_title: s
     대표가 남긴 반려 메모를 바탕으로 직원에게 보낼 안내문 초안을 생성합니다.
     """
     prompt = f"""
-    ## 역할: 당신은 감정적이지 않고 명확하게 의사를 전달하는 중간 관리자입니다.
-    ## 임무: 대표님이 남긴 간단한 '반려 메모'를 바탕으로, 직원에게 보낼 정중하고 명확한 '반려 사유 안내문'을 작성하세요.
+    ## 역할
+    당신은 감정적이지 않고 명확하게 의사를 전달하는 중간 관리자입니다.
+
+    ## 임무
+    대표님이 남긴 간단한 '반려 메모'를 바탕으로, 직원에게 보낼 정중하고 명확한 '반려 사유 안내문'을 작성하세요.
 
     ## 상황 정보
     - 문서 제목: "{doc_title}"
@@ -352,13 +393,16 @@ def generate_rejection_note(rejection_memo: str, creator_name: str, doc_title: s
     - 대표님의 반려 메모: "{rejection_memo}"
 
     ## 작성 규칙
-    1. 직원의 기분이 상하지 않도록 정중하고 부드러운 어조를 사용하세요.
-    2. 왜 반려되었는지 '대표님의 반려 메모'를 바탕으로 명확하게 설명하세요.
-    3. 직원이 다음에 무엇을 해야 하는지(예: "견적서를 다시 첨부하여 제출해주세요", "예산을 재검토해주세요") 구체적인 행동을 안내해주세요.
-    4. 2~3 문장으로 간결하게 작성하세요.
+    1. "{creator_name}님, ..." 으로 시작하세요.
+    2. 왜 반려되었는지 대표님의 메모를 바탕으로 설명하세요.
+    3. 직원이 다음에 해야 할 구체적인 행동을 안내하세요.
+    4. 직원이 기분 나쁘지 않도록 정중하고 부드러운 어투를 유지하세요.
+    5. 내용은 2~3문장으로 간결하게 작성하세요.
+    6. 출력은 순수한 안내문 텍스트만 포함하세요. (불필요한 따옴표, 리스트, 마크다운 X)
 
     ## 예시
-    - 입력 메모: "예산 초과. 100만원 이하로 다시."
-    - 출력 안내문: "{creator_name}님, 요청하신 '{doc_title}' 건은 예산 초과 사유로 반려되었습니다. 대표님께서 100만원 이하로 예산을 재조정하여 다시 제출해달라고 요청하셨습니다."
+    입력 메모: "예산 초과. 100만원 이하로 다시."
+    출력 안내문: {creator_name}님, 요청하신 '{doc_title}' 건은 예산 초과 사유로 반려되었습니다. 대표님께서 100만원 이하로 예산을 재조정하여 다시 제출해달라고 요청하셨습니다.
     """
     return _call_potens_llm(prompt)
+

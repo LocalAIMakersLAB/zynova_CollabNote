@@ -1,7 +1,7 @@
 import streamlit as st
 import time, json
 from db import register_profile, login_profile
-from mypages import inbox, compose, rejected_requests, dashboard 
+from mypages import inbox, compose, rejected_requests, dashboard, utils_llm
 
 # PAGES = {
 #     # 이제 compose는 라우팅에 포함시키지 않습니다.

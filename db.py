@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 import bcrypt
 from datetime import datetime, timedelta, timezone
+from potens_client import generate_approval_summary
 
 # .env 불러오기
 load_dotenv()
@@ -94,7 +95,6 @@ def create_draft(creator_id: str, doc_type: str, filled: dict, missing: list, co
     """
     drafts: (draft_id, creator, type, filled jsonb, missing jsonb, confirm_text text, status)
     """
-
     response = supabase.table("drafts").insert({
         "creator": creator_id,
         "type": doc_type,
@@ -103,30 +103,35 @@ def create_draft(creator_id: str, doc_type: str, filled: dict, missing: list, co
         "confirm_text": confirm_text,
         "status": "editing"
     }).execute()
-    return response.data
 
-def submit_draft(draft_id: str, title: str, summary: str, assignee: str, due_date: str):
+    # Supabase는 리스트로 반환하므로 draft_id만 추출
+    if response.data:
+        return response.data[0]["draft_id"]
+    return None
+
+def submit_draft(draft_id: str, confirm_text: str, assignee: str, due_date: str, creator_id: str):
     """
     승인 요청 제출 → drafts.status='submitted' 업데이트 + approvals 생성
     approvals: (approval_id, draft_id, title, summary, confirm_text, assignee, due_date, status)
     """
-
     # 1) draft 상태 업데이트
     supabase.table("drafts").update({"status": "submitted"}).eq("draft_id", draft_id).execute()
 
-    # 2) approvals 생성
-    draft_res = supabase.table("drafts").select("*").eq("draft_id", draft_id).limit(1).execute()
-    draft = draft_res.data[0] if draft_res.data else {}
+    # 2) LLM 요약 생성
+    summary_obj = generate_approval_summary(confirm_text) or {}
+    title = summary_obj.get("title", "제목없음")
+    summary = summary_obj.get("summary", "")
 
+    # 3) approvals 생성
     response = supabase.table("approvals").insert({
         "draft_id": draft_id,
         "title": title,
         "summary": summary,
-        "confirm_text": draft.get("confirm_text", ""),
-
+        "confirm_text": confirm_text,
         "assignee": assignee,
         "due_date": due_date,
-        "status": "대기중"
+        "status": "대기중",
+        "creator_id": creator_id
     }).execute()
     return response.data
 
@@ -269,3 +274,33 @@ def get_user_rejected_requests(user_id: str) -> List[Dict[str, Any]]:
         print(f"Error fetching rejected requests: {e}")
         return []
 
+# -----------------------
+# 직원 알림 (Notifications)
+# -----------------------
+def create_notification(user_id: str, message: str):
+    """
+    특정 직원(user_id)에게 알림을 생성합니다.
+    """
+    response = supabase.table("notifications").insert({
+        "user_id": user_id,
+        "message": message,
+        "read": False
+    }).execute()
+    return response.data
+
+def get_notifications(user_id: str, only_unread: bool = True) -> List[Dict[str, Any]]:
+    """
+    특정 직원(user_id)의 알림 목록을 가져옵니다.
+    """
+    query = supabase.table("notifications").select("*").eq("user_id", user_id)
+    if only_unread:
+        query = query.eq("read", False)
+    res = query.order("created_at", desc=True).execute()
+    return res.data or []
+
+def mark_notification_as_read(notification_id: str):
+    """
+    특정 알림을 읽음 처리합니다.
+    """
+    res = supabase.table("notifications").update({"read": True}).eq("notification_id", notification_id).execute()
+    return res.data
