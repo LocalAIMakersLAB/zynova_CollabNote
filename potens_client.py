@@ -1,7 +1,7 @@
 import os, json, requests
 import streamlit as st
 from typing import Optional, List, Dict, Any, Union, Tuple
-from mypages.utils_llm import backoff_sleep, try_parse_json, normalize_keys  # 있으면 사용
+from utils_llm import backoff_sleep, try_parse_json, normalize_keys, validate_keys  # 있으면 사용
 
 # ========== Env ==========
 APP_MODE = os.getenv("APP_MODE", "live").lower()      # live | mock
@@ -39,376 +39,326 @@ def _http_post_json(url: str, payload: dict) -> Tuple[Optional[dict], Optional[s
                 continue
             return None, str(e)
 
-def _parse_prompt_style(res: dict, is_json: bool) -> Union[dict, str]:
-    """
-    LLM담당자 구현: { "message": "... 혹은 ```json ... ```" }
-    """
-    content = (res or {}).get("message", "")
-    if is_json:
-        txt = content.strip()
-        if txt.startswith("```json"):
-            txt = txt.replace("```json", "").replace("```", "").strip()
-        try:
-            return json.loads(txt) if txt else {}
-        except Exception:
-            ok, obj = try_parse_json(txt) if 'try_parse_json' in globals() else (False, None)
-            return obj if ok else {}
-    return content.strip()
+# --- LLM 호출 공통 함수 (최종 수정) ---
+def _call_potens_llm(prompt: str, is_json: bool = False) -> Union[dict, str]:
+    """Potens LLM을 호출하고, 실제 응답 구조에 맞게 결과를 파싱합니다."""
+    payload = {"prompt": prompt}
 
-def _parse_chat_style(res: dict, is_json: bool) -> Union[dict, str]:
-    """
-    우리 구현: { "output": ..., "choices":[{"message":{"content": "..."}}, ...] }
-    """
-    if is_json:
-        out = res.get("output")
-        if isinstance(out, dict):
-            return out
-        # choices 경로에서 텍스트 → json 파싱
-        try:
-            txt = res["choices"][0]["message"]["content"]
-            # 코드블록 제거 대응
-            txt_clean = txt.strip()
-            if txt_clean.startswith("```json"):
-                txt_clean = txt_clean.replace("```json", "").replace("```", "").strip()
-            try:
-                return json.loads(txt_clean)
-            except Exception:
-                ok, obj = try_parse_json(txt_clean) if 'try_parse_json' in globals() else (False, None)
-                return obj if ok else {}
-        except Exception:
-            return {}
-    # text
-    out = res.get("output")
-    if isinstance(out, str) and out.strip():
-        return out
     try:
-        return res["choices"][0]["message"]["content"]
-    except Exception:
-        return ""
-    
-def _heuristic_doc_type(user_utterance: str, templates: List[dict]) -> str:
-    """키워드로 안전하게 doc_type 추정 (LLM 실패/모호 응답 대비)"""
-    text = (user_utterance or "").lower()
-    options = [t["type"] for t in templates] or ["품의"]
+        response = requests.post(POTENS_API_URL, headers=HEADERS, json=payload, timeout=20)
+        response.raise_for_status()
+        
+        # 1. 실제 응답 데이터 가져오기
+        response_data = response.json()
+        
+        # 2. 'message' 키에서 내용을 추출
+        content = response_data.get('message', '')
 
-    # 키워드 → 템플릿 이름 매핑 (원하는대로 추가/수정 가능)
-    rules = [
-        ("품의", ["품의"]),
-        ("견적", ["견적", "quotation", "quote"]),
-        ("연차", ["연차", "휴가", "annual leave"]),
-        ("지출", ["지출", "구매", "발주", "결재", "경비", "송금", "대금", "청구"]),
-    ]
+        # 3. 만약 내용이 JSON을 감싼 마크다운 코드 블록이라면 순수 JSON만 추출
+        if is_json and content.startswith("```json"):
+            content = content.strip().replace("```json", "").replace("```", "")
+        
+        # 4. 최종 결과 반환
+        return json.loads(content) if is_json else content.strip()
 
-    for label, keys in rules:
-        if label in options and any(k in text for k in keys):
-            return label
+    except Exception as e:
+        st.error(f"LLM API 호출 또는 파싱 중 오류: {e}")
+        # 오류 발생 시 실제 응답 내용을 확인하기 위해 터미널에 출력
+        print(f"❌ 오류 발생 시점의 API 응답: {response.text}")
+        return {} if is_json else f"오류: {e}"
 
-    # 그래도 못찾으면 첫 템플릿으로 폴백
-    return options[0]
+# def _llm_call(
+#     prompt: Optional[str] = None,
+#     messages: Optional[List[Dict[str, str]]] = None,
+#     is_json: bool = False
+# ) -> Union[dict, str]:
+#     """
+#     - APP_MODE=mock → mock marker 반환
+#     - POTENS_API_STYLE=prompt → POST {POTENS_API_URL} with {"prompt": ...}
+#     - POTENS_API_STYLE=chat   → POST {POTENS_API_URL}/chat with {"messages":[...], ...}
+#     """
+#     if APP_MODE == "mock":
+#         st.info("APP_MODE=mock: LLM 호출 대신 Mock 응답을 사용합니다.")
+#         return {"__error__": "APP_MODE=mock"} if is_json else "[MOCK]"
 
-def _llm_call(
-    prompt: Optional[str] = None,
-    messages: Optional[List[Dict[str, str]]] = None,
-    is_json: bool = False,
-) -> Union[dict, str]:
-    """
-    - APP_MODE=mock  → mock 마커 반환
-    - POTENS_API_STYLE=prompt → POST {POTENS_API_URL}             with {"prompt": ...}
-    - POTENS_API_STYLE=chat   → POST {POTENS_API_URL or */chat* } with {"messages":[...]}
-    - 응답 스키마 자동 감지: LLM담당자형({"message":...}) / 우리형({"choices":[...],"output":...})
-    """
-    # 0) 모드/환경 체크
-    if APP_MODE == "mock":
-        st.info("APP_MODE=mock: LLM 호출 대신 Mock 응답을 사용합니다.")
-        return {"__error__": "APP_MODE=mock"} if is_json else "[MOCK]"
+#     if not POTENS_API_URL or not POTENS_API_KEY:
+#         st.error("POTENS_API_URL 또는 POTENS_API_KEY 가 설정되지 않았습니다. Mock으로 동작합니다.")
+#         return {"__error__": "API Key not configured"} if is_json else "[MOCK]"
 
-    if not POTENS_API_URL or not POTENS_API_KEY:
-        st.error("POTENS_API_URL 또는 POTENS_API_KEY 가 설정되지 않았습니다. Mock으로 동작합니다.")
-        return {"__error__": "API Key not configured"} if is_json else "[MOCK]"
+#     # 공통 파라미터(벤더별로 무시될 수 있음)
+#     params = {
+#         "temperature": float(os.getenv("POTENS_TEMPERATURE", "0.2")),
+#         "top_p": float(os.getenv("POTENS_TOP_P", "0.9")),
+#         "max_tokens": int(os.getenv("POTENS_MAX_TOKENS", "800")),
+#     }
 
-    # 1) 공통 파라미터
-    params = {
-        "temperature": float(os.getenv("POTENS_TEMPERATURE", "0.2")),
-        "top_p": float(os.getenv("POTENS_TOP_P", "0.9")),
-        "max_tokens": int(os.getenv("POTENS_MAX_TOKENS", "800")),
-    }
+#     if POTENS_API_STYLE == "prompt":
+#         if not prompt:
+#             return {} if is_json else ""
+#         url = POTENS_API_URL  # ex: https://ai.potens.ai/api/chat (LLM담당자 버전은 루트에 바로 POST)
+#         payload = {**params, "prompt": prompt}
+#         res, err = _http_post_json(url, payload)
+#         if err or not isinstance(res, dict):
+#             return {} if is_json else ""
+#         return _parse_prompt_style(res, is_json)
 
-    # 2) URL 보정 + payload 구성
-    style = POTENS_API_STYLE or "chat"
-    base = (POTENS_API_URL or "").rstrip("/")
-
-    if style == "prompt":
-        if not prompt:
-            return {} if is_json else ""
-        url = base  # LLM담당자 버전은 루트에 바로 POST
-        payload = {**params, "prompt": prompt}
-    else:
-        # chat(default): 이미 /chat로 끝나있으면 그대로, 아니면 붙인다.
-        url = base if base.endswith("/chat") else (base + "/chat")
-        if not messages:
-            return {} if is_json else ""
-        payload = {**params, "messages": messages}
-
-    # 3) 호출
-    res, err = _http_post_json(url, payload)
-    if err or not isinstance(res, dict):
-        return {} if is_json else ""
-
-    # 4) 응답 스키마 자동 파싱
-    #   - LLM담당자 스타일: {"message": "..."} (코드펜스 포함 가능)
-    if "message" in res and not res.get("choices"):
-        return _parse_prompt_style(res, is_json)
-
-    #   - 우리 스타일: {"output": ..., "choices":[{"message":{"content":"..."}}]}
-    if res.get("choices") or "output" in res:
-        return _parse_chat_style(res, is_json)
-
-    #   - 예외: 둘 다 아니면 안전 폴백
-    if is_json:
-        # 가능한 텍스트 필드 추출 후 JSON 시도
-        text = res.get("message") or res.get("output") or ""
-        try:
-            return json.loads(text) if text else {}
-        except Exception:
-            return {}
-    else:
-        return (res.get("message") or res.get("output") or "").strip()
-
+#     # default: chat
+#     if not messages:
+#         return {} if is_json else ""
+#     url = POTENS_API_URL.rstrip("/") + "/chat"
+#     payload = {**params, "messages": messages}
+#     res, err = _http_post_json(url, payload)
+#     if err or not isinstance(res, dict):
+#         return {} if is_json else ""
+#     return _parse_chat_style(res, is_json)
 
 # ========== 기능 함수들 ==========
 # 1) 템플릿 분류
-def infer_doc_type(user_utterance: str, templates: List[dict]) -> str:
-    options = [t["type"] for t in templates]
+def infer_doc_type(user_utterance: str, templates: list[dict]) -> str:
+    """
+    사용자의 발화를 분석하여 가장 적합한 문서 종류(type)를 분류합니다.
+    """
+    template_options = [t['type'] for t in templates]
+
     prompt = f"""
-## 역할: 직원 요청을 올바른 서식으로 매핑하는 어시스턴트
-## 임무: 아래 '선택 가능 서식' 중에서 딱 하나만, 설명 없이 반환하세요.
+    ## 역할: 당신은 직원의 요청을 듣고 올바른 업무 서식을 찾아주는 AI 비서입니다.
 
-선택 가능 서식: {json.dumps(options, ensure_ascii=False)}
-사용자 요청: "{user_utterance}"
-"""
-    if POTENS_API_STYLE == "prompt":
-        out = _llm_call(prompt=prompt, is_json=False)
-    else:
-        out = _llm_call(messages=[{"role":"user","content":prompt}], is_json=False)
+    ## 임무: 사용자의 요청이 아래 '선택 가능 서식' 중 어떤 것과 가장 관련이 깊은지 정확히 판단하여, 그 서식의 이름 '하나'만 응답하세요.
 
-    doc = str(out).strip() if out else ""
-    # LLM 결과가 비었거나 후보에 없으면 휴리스틱으로 보정
-    if not doc or doc not in options:
-        return _heuristic_doc_type(user_utterance, templates)
-    return doc
+    ## 선택 가능 서식:
+    {json.dumps(template_options, ensure_ascii=False)}
 
-def infer_doc_type_and_fields(user_utterance: str, templates: List[dict]) -> dict:
-    if not templates:
-        return {"doc_type": "품의", "required": []}
+    ## 사용자 요청:
+    "{user_utterance}"
 
-    context = [{"type": t["type"], "required": t["fields"].get("required", [])} for t in templates][:20]
-    prompt = (
-        "당신은 문서 템플릿 어시스턴트입니다.\n"
-        "아래 사용자 요청에 가장 맞는 문서 유형(doc_type)과 필수필드(required)만 JSON으로 응답하세요.\n"
-        "반드시 키는 doc_type, required만 포함하세요.\n\n"
-        f"사용자 요청: {user_utterance}\n"
-        f"템플릿 후보(요약): {context}\n"
-        '출력 예: {"doc_type": "품의", "required": ["금액","근거","기한","승인선"]}'
-    )
-
-    if POTENS_API_STYLE == "prompt":
-        res = _llm_call(prompt=prompt, is_json=True)
-    else:
-        res = _llm_call(messages=[{"role":"user","content":prompt}], is_json=True)
-
-    obj = res if isinstance(res, dict) else {}
-    obj = normalize_keys(obj) if 'normalize_keys' in globals() else obj
-
-    doc_type = obj.get("doc_type")
-    if not doc_type:
-        # 완전 실패 → 휴리스틱
-        doc_type = _heuristic_doc_type(user_utterance, templates)
-
-    # 템플릿 존재성 보정
-    if not any(t["type"] == doc_type for t in templates):
-        # 대소문자 보정 후에도 없으면 휴리스틱
-        cand = next((t["type"] for t in templates if t["type"].lower() == str(doc_type).lower()), None)
-        doc_type = cand or _heuristic_doc_type(user_utterance, templates)
-
-    required = next((x["fields"].get("required", []) for x in templates if x["type"] == doc_type), [])
-    return {"doc_type": doc_type, "required": required}
+    ## 출력 규칙:
+    - 반드시 '선택 가능 서식'에 있는 이름 중 하나로만 대답해야 합니다.
+    - 다른 설명 없이 서식의 이름만 출력하세요.
+    """
+    doc_type = _call_potens_llm(prompt)
+    return doc_type.strip()
 
 # 2) 초발화 분석 + 질문 (LLM담당자 함수)
 def analyze_request_and_ask(user_utterance: str, template: dict) -> dict:
     prompt = f"""
-## 역할 및 목표
-당신은 직원의 문서 작성을 돕는 꼼꼼한 AI 어시스턴트입니다.
-목표: 사용자의 첫 발화에서 가능한 정보를 추출하고, 누락된 필수 필드에 대한 질문을 생성.
+    ## 역할 및 목표
+    당신은 직원의 문서 작성을 돕는 꼼꼼한 AI 어시스턴트입니다.
+    당신의 목표는 사용자의 첫 발화에서 가능한 모든 정보를 추출하고, 누락된 필수 필드에 대해 명확한 질문을 생성하는 것입니다.
 
-문서 종류: "{template.get('type')}"
-필수 필드: {json.dumps(template.get('fields', {}), ensure_ascii=False)}
-사용자 최초 발화: "{user_utterance}"
 
-JSON 형식으로만 응답:
-{{
-  "filled_fields": {{}},
-  "missing_fields": [],
-  "ask": [{{"key":"","question":""}}]
-}}
-"""
-    if POTENS_API_STYLE == "prompt":
-        res = _llm_call(prompt=prompt, is_json=True)
-    else:
-        res = _llm_call(messages=[{"role":"user","content":prompt}], is_json=True)
-    # 안전보정
-    if not isinstance(res, dict):
-        return {"filled_fields": {}, "missing_fields": [], "ask": []}
-    return {
-        "filled_fields": res.get("filled_fields", {}) or {},
-        "missing_fields": res.get("missing_fields", []) or [],
-        "ask": res.get("ask", []) or [],
-    }
 
-# 2-b) 누락질문 전용 (우리 함수)
-def generate_questions(template_fields: dict, user_filled: dict) -> dict:
-    required = template_fields.get("required", [])
-    pruned = dict(list(user_filled.items())[:50])
-    prompt = (
-        "당신은 양식 어시스턴트입니다. 다음의 필수 키와 현재 값으로부터 누락된 필드를 찾고, "
-        "사용자에게 물어볼 질문 배열을 만드세요. 한국어로 간결히.\n"
-        "반드시 JSON으로 응답하며, 키는 required_fields, missing_fields, ask 만 포함하세요.\n"
-        f"required_keys = {json.dumps(required, ensure_ascii=False)}\n"
-        f"current_values = {json.dumps(pruned, ensure_ascii=False)}\n"
-        '출력 예: {"required_fields":["금액","기한"],"missing_fields":["기한"],"ask":[{"key":"기한","question":"기한은 언제까지인가요?"}]}'
-    )
-    if POTENS_API_STYLE == "prompt":
-        res = _llm_call(prompt=prompt, is_json=True)
-    else:
-        messages=[{"role":"user","content":prompt}]
-        # chat 스타일은 json_schema 옵션도 붙일 수 있지만 서버마다 달라 생략
-        res = _llm_call(messages=messages, is_json=True)
+    ## 문서 템플릿 정보
+    - 종류: "{template['type']}"
+    - 필수 필드: {template['fields']}
 
-    if not isinstance(res, dict):
-        return {"required_fields": required, "missing_fields": [], "ask": []}
+    ## 작성 가이드 (참고)
+    {template.get('guide_md', '가이드 없음')}
 
-    res = normalize_keys(res) if 'normalize_keys' in globals() else res
-    # 스키마 보정
-    return {
-        "required_fields": list(map(str, res.get("required_fields", required))),
-        "missing_fields": list(map(str, res.get("missing_fields", []))),
-        "ask": [
-            {
-                "key": str(x.get("key","")).strip(),
-                "question": str(x.get("question","")).strip(),
-                "options": [str(o) for o in x.get("options", [])]
-            }
-            for x in (res.get("ask", []) or []) if isinstance(x, dict)
-        ]
-    }
+    ## 출력 규칙
+    
+    - 질문은 절대 "‘필드명’ 값을 알려주세요" 형식을 쓰지 마세요.
+    - 질문은 항상 친근하고 자연스러운 대화체 문장으로 작성하세요.
+    - 예: "사유를 말씀해 주실 수 있을까요?", "언제까지 필요하신가요?" 
+    - `filled_fields`: 사용자의 발화에서 추출한 값들을 채워주세요.
+    - `missing_fields`: 값이 아직 비어있는 필드의 키 목록을 알려주세요.
+    - `ask`: 누락된 각 필드에 대해 질문을 생성해주세요.
+    - 질문은 친근하고 자연스러운 한국어 대화체로 작성하세요.
+    - 단, 업무 문맥을 해치지 않도록 정중한 어투를 유지하세요.
+    - 예: "사유를 알려주실 수 있을까요?" / "언제까지 필요하신가요?"
+
+    ## JSON 출력 형식
+    {{
+      "filled_fields": {{ "필드키": "추출한 값", ... }},
+      "missing_fields": ["누락된 필드키1", "누락된 필드키2", ...],
+      "ask": [
+        {{ "key": "누락된 필드키1", "question": "자연스럽게 만든 질문" }},
+        {{ "key": "누락된 필드키2", "question": "자연스럽게 만든 질문" }}
+      ]
+    }}
+
+    ## 사용자 최초 발화
+    "{user_utterance}"
+    """
+    return _call_potens_llm(prompt, is_json=True)
+
+# def infer_doc_type_and_fields(user_utterance: str, templates: List[dict]) -> dict:
+#     """
+#     우리 함수 호환: {"doc_type": str, "required": [str]}
+#     """
+#     if not templates:
+#         return {"doc_type": "품의", "required": []}
+#     # chat 모드에 최적화된 프롬프트
+#     context = [{"type": t["type"], "required": t["fields"].get("required", [])} for t in templates][:20]
+#     prompt = (
+#         "당신은 문서 템플릿 어시스턴트입니다.\n"
+#         "아래 사용자 요청에 가장 맞는 문서 유형(doc_type)과 필수필드(required)만 JSON으로 응답하세요.\n"
+#         "반드시 키는 doc_type, required만 포함하세요.\n\n"
+#         f"사용자 요청: {user_utterance}\n"
+#         f"템플릿 후보(요약): {context}\n"
+#         '출력 예: {"doc_type": "품의", "required": ["금액","근거","기한","승인선"]}'
+#     )
+#     if POTENS_API_STYLE == "prompt":
+#         res = _llm_call(prompt=prompt, is_json=True)
+#     else:
+#         res = _llm_call(messages=[{"role":"user","content":prompt}], is_json=True)
+
+#     obj = res if isinstance(res, dict) else {}
+#     obj = normalize_keys(obj) if 'normalize_keys' in globals() else obj
+#     if not obj or not obj.get("doc_type"):
+#         # 폴백: infer_doc_type 만이라도
+#         t = infer_doc_type(user_utterance, templates)
+#         req = next((x["fields"].get("required", []) for x in templates if x["type"] == t), [])
+#         return {"doc_type": t, "required": req}
+#     # 템플릿 존재성 보정
+#     if not any(t["type"] == obj["doc_type"] for t in templates):
+#         cand = next((t["type"] for t in templates if t["type"].lower()==str(obj["doc_type"]).lower()), templates[0]["type"])
+#         obj["doc_type"] = cand
+#     return obj
+
+
+
+# # 2-b) 누락질문 전용 (우리 함수)
+# def generate_questions(template_fields: dict, user_filled: dict) -> dict:
+#     required = template_fields.get("required", [])
+#     pruned = dict(list(user_filled.items())[:50])
+#     prompt = (
+#         "당신은 양식 어시스턴트입니다. 다음의 필수 키와 현재 값으로부터 누락된 필드를 찾고, "
+#         "사용자에게 물어볼 질문 배열을 만드세요. 한국어로 간결히.\n"
+#         "반드시 JSON으로 응답하며, 키는 required_fields, missing_fields, ask 만 포함하세요.\n"
+#         f"required_keys = {json.dumps(required, ensure_ascii=False)}\n"
+#         f"current_values = {json.dumps(pruned, ensure_ascii=False)}\n"
+#         '출력 예: {"required_fields":["금액","기한"],"missing_fields":["기한"],"ask":[{"key":"기한","question":"기한은 언제까지인가요?"}]}'
+#     )
+#     if POTENS_API_STYLE == "prompt":
+#         res = _llm_call(prompt=prompt, is_json=True)
+#     else:
+#         messages=[{"role":"user","content":prompt}]
+#         # chat 스타일은 json_schema 옵션도 붙일 수 있지만 서버마다 달라 생략
+#         res = _llm_call(messages=messages, is_json=True)
+
+#     if not isinstance(res, dict):
+#         return {"required_fields": required, "missing_fields": [], "ask": []}
+
+#     res = normalize_keys(res) if 'normalize_keys' in globals() else res
+#     # 스키마 보정
+#     return {
+#         "required_fields": list(map(str, res.get("required_fields", required))),
+#         "missing_fields": list(map(str, res.get("missing_fields", []))),
+#         "ask": [
+#             {
+#                 "key": str(x.get("key","")).strip(),
+#                 "question": str(x.get("question","")).strip(),
+#                 "options": [str(o) for o in x.get("options", [])]
+#             }
+#             for x in (res.get("ask", []) or []) if isinstance(x, dict)
+#         ]
+#     }
 
 # 3) 컨펌 텍스트
-def generate_confirm_text(user_filled: dict, template_type: str | None = None) -> str:
-    pruned = dict(list(user_filled.items())[:80])
-    prompt = (
-        "당신은 문서 요약 전문가입니다. 아래 key-value를 바탕으로 대표가 30초 내 의사결정을 할 수 있게 "
-        "간결하고 공손한 본문을 생성하세요. 금액/기한/사유/근거는 굵게(**) 표시하고, "
-        "누락이나 빈 값은 [ ] 로 표시하세요. 한국어로 작성하세요.\n\n"
-        f"{json.dumps(pruned, ensure_ascii=False, indent=2)}"
-    )
-    if POTENS_API_STYLE == "prompt":
-        out = _llm_call(prompt=prompt, is_json=False)
-    else:
-        out = _llm_call(messages=[{"role":"user","content":prompt}], is_json=False)
-    return out if isinstance(out, str) else ""
+def generate_confirm_text(filled_data: dict, template_type: str) -> str:
+    prompt = f"""
+    ## 역할
+    당신은 전문적인 비즈니스 문서 작성가입니다. 당신의 임무는 정형화된 데이터를 바탕으로, 관리자가 승인을 위해 검토할 간결하고 공식적인 보고서를 작성하는 것입니다.
+
+    ## 원본 데이터
+    {json.dumps(filled_data, ensure_ascii=False, indent=2)}
+
+    ## 작성 규칙
+    - 6~10개 문장 내외의 공식적인 보고서 텍스트를 작성하세요.
+    - 문체는 정중하고 전문적이어야 합니다.
+    - 금액, 기한, 핵심 사유 등 의사결정에 중요한 부분은 마크다운 굵은 글씨(`**텍스트**`)로 강조하세요.
+    - 만약 값이 비어있는 항목이 있다면, `[입력 필요]` 라고 명확하게 표시하세요.
+    - 출력은 마크다운 형식의 본문 텍스트만 포함해야 합니다.
+    """
+    return _call_potens_llm(prompt)
 
 # 4) 승인용 요약(LLM담당자)
 def generate_approval_summary(confirm_text: str) -> dict:
     prompt = f"""
-## 역할: 바쁜 경영진용 요약
-원본:
-{confirm_text}
+    ## 역할
+    당신은 요약 전문가입니다. 당신의 임무는 업무 보고서를 읽고, 바쁜 경영진을 위해 핵심만 요약하는 것입니다.
 
-아래 JSON으로만 응답:
-{{"title":"","summary":"","points":["","",""]}}
-"""
-    if POTENS_API_STYLE == "prompt":
-        res = _llm_call(prompt=prompt, is_json=True)
-    else:
-        res = _llm_call(messages=[{"role":"user","content":prompt}], is_json=True)
-    return {
-        "title": (res or {}).get("title",""),
-        "summary": (res or {}).get("summary",""),
-        "points": (res or {}).get("points",[]) or []
-    }
+    ## 원본 보고서
+    {confirm_text}
+
+    ## 임무
+    다음 세 개의 키를 가진 JSON 객체를 생성하세요:
+    - `title`: 보고서의 핵심 내용을 담은 짧고 강력한 제목 (예: "프로젝트 A 장비 구매 건").
+    - `summary`: 한두 문장으로 된 요약.
+    - `points`: 의사결정에 가장 중요한 핵심 포인트 3가지를 담은 리스트.
+
+    ## JSON 출력 형식
+    {{
+      "title": "문자열",
+      "summary": "문자열",
+      "points": ["문자열", "문자열", "문자열"]
+    }}
+    """
+    return _call_potens_llm(prompt, is_json=True)
 
 # 5) 후속조치 알림(LLM담당자)
 def generate_next_step_alert(approved_data: dict) -> str:
     prompt = f"""
-## 상황
-'{approved_data.get('creator_name','담당 직원')}'의 '{approved_data.get('type','요청')}' 요청이 승인됨.
-가장 논리적인 후속 조치 한 문장을 생성.
+    ## 상황
+    '{approved_data.get('creator_name', '담당 직원')}' 직원이 제출한 '{approved_data.get('type', '요청')}' 요청이 방금 승인되었습니다.
+    일반적인 업무 절차에 따라, 가장 논리적인 다음 후속 조치는 무엇인가요?
+    
+    ## 임무
+    방금 요청을 승인한 관리자를 위해, 승인 사실과 다음 후속 조치를 알려주는 짧은 한 문장의 알림 메시지를 생성하세요.
 
-출력: 한국어 한 문장
-"""
-    if POTENS_API_STYLE == "prompt":
-        out = _llm_call(prompt=prompt, is_json=False)
-    else:
-        out = _llm_call(messages=[{"role":"user","content":prompt}], is_json=False)
-    return str(out).strip()
+    ## 예시
+    입력: 김민준 직원의 출장 경비 보고서.
+    출력: 출장 경비 보고서 승인을 완료했습니다. 회계팀에 김민준 님의 출장비 지급을 요청해야 합니다.
+    """
+    return _call_potens_llm(prompt)
 
 # 6) 컨펌 텍스트 검증(LLM담당자)
 def validate_confirm_text(confirm_text: str, required_fields: list) -> dict:
+    """생성된 컨펌 텍스트에 빈 값이나 논리적 오류가 있는지 최종 검증합니다."""
+    
     prompt = f"""
-## 역할: 문서 검수관
-본문:
-{confirm_text}
+    ## 역할: 당신은 매우 꼼꼼한 문서 검수관입니다.
+    ## 임무: 아래 보고서 본문을 읽고, '필수 항목'이 모두 채워졌는지, 논리적 오류는 없는지 검증하세요.
 
-필수 항목: {json.dumps(required_fields, ensure_ascii=False)}
-JSON으로만 응답:
-{{"is_valid": false, "missing": [], "suggestion": ""}}
-"""
-    if POTENS_API_STYLE == "prompt":
-        res = _llm_call(prompt=prompt, is_json=True)
-    else:
-        res = _llm_call(messages=[{"role":"user","content":prompt}], is_json=True)
-    if not isinstance(res, dict):
-        return {"is_valid": False, "missing": [], "suggestion": ""}
-    return {
-        "is_valid": bool(res.get("is_valid", False)),
-        "missing": res.get("missing", []) or [],
-        "suggestion": res.get("suggestion","") or ""
-    }
+    ## 보고서 본문:
+    {confirm_text}
+
+    ## 필수 항목 목록:
+    {required_fields}
+
+    ## 출력 규칙:
+    - 만약 본문에 `[입력 필요]`와 같은 빈 칸이 있거나, 필수 항목 내용이 비어있다면 `missing` 목록에 해당 항목을 추가하세요.
+    - 만약 내용에 논리적 모순이 있다면 `suggestion`에 수정 제안을 담아주세요.
+    - 문제가 없다면 `is_valid`를 true로 설정하세요.
+    - 반드시 JSON 형식으로만 응답하세요.
+    
+    ## JSON 출력 형식:
+    {{ "is_valid": boolean, "missing": ["누락된 필드명"], "suggestion": "수정 제안 문구" }}
+    """
+    return _call_potens_llm(prompt, is_json=True)
 
 # 7) 반려 안내문(LLM담당자)
 def generate_rejection_note(rejection_memo: str, creator_name: str, doc_title: str) -> str:
+    """
+    대표가 남긴 반려 메모를 바탕으로 직원에게 보낼 안내문 초안을 생성합니다.
+    """
     prompt = f"""
-## 역할: 정중하고 명확한 반려 안내
-문서 제목: "{doc_title}"
-작성자: "{creator_name}"
-대표 메모: "{rejection_memo}"
+    ## 역할: 당신은 감정적이지 않고 명확하게 의사를 전달하는 중간 관리자입니다.
+    ## 임무: 대표님이 남긴 간단한 '반려 메모'를 바탕으로, 직원에게 보낼 정중하고 명확한 '반려 사유 안내문'을 작성하세요.
 
-2~3문장, 한국어, 정중/구체적으로 작성.
-"""
-    if POTENS_API_STYLE == "prompt":
-        out = _llm_call(prompt=prompt, is_json=False)
-    else:
-        out = _llm_call(messages=[{"role":"user","content":prompt}], is_json=False)
-    return str(out).strip()
+    ## 상황 정보
+    - 문서 제목: "{doc_title}"
+    - 작성 직원: "{creator_name}"
+    - 대표님의 반려 메모: "{rejection_memo}"
 
-# --- Quick debug helper ---
-def debug_llm_status():
-    return {
-        "APP_MODE": os.getenv("APP_MODE"),
-        "POTENS_API_STYLE": os.getenv("POTENS_API_STYLE"),
-        "POTENS_API_URL": os.getenv("POTENS_API_URL"),
-        "HAS_API_KEY": bool(os.getenv("POTENS_API_KEY")),
-    }
+    ## 작성 규칙
+    1. 직원의 기분이 상하지 않도록 정중하고 부드러운 어조를 사용하세요.
+    2. 왜 반려되었는지 '대표님의 반려 메모'를 바탕으로 명확하게 설명하세요.
+    3. 직원이 다음에 무엇을 해야 하는지(예: "견적서를 다시 첨부하여 제출해주세요", "예산을 재검토해주세요") 구체적인 행동을 안내해주세요.
+    4. 2~3 문장으로 간결하게 작성하세요.
 
-def debug_llm_ping():
-    """엔드포인트 스타일별 최소 호출로 실제 응답을 확인"""
-    try:
-        if os.getenv("POTENS_API_STYLE","chat").lower() == "prompt":
-            payload = {"prompt": "ping"}
-            r = requests.post(os.getenv("POTENS_API_URL"), headers=HEADERS, json=payload, timeout=(6,12))
-        else:
-            payload = {"messages":[{"role":"user","content":"ping"}]}
-            url = os.getenv("POTENS_API_URL").rstrip("/") + "/chat"
-            r = requests.post(url, headers=HEADERS, json=payload, timeout=(6,12))
-        return {"status": r.status_code, "body": r.text[:500]}
-    except Exception as e:
-        return {"error": str(e)}
+    ## 예시
+    - 입력 메모: "예산 초과. 100만원 이하로 다시."
+    - 출력 안내문: "{creator_name}님, 요청하신 '{doc_title}' 건은 예산 초과 사유로 반려되었습니다. 대표님께서 100만원 이하로 예산을 재조정하여 다시 제출해달라고 요청하셨습니다."
+    """
+    return _call_potens_llm(prompt)

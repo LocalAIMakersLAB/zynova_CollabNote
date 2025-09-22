@@ -82,7 +82,7 @@ def get_rag_context(doc_type: str) -> str:
         return res.data.get("guide_md", "") if res.data else ""
     except Exception:
         return ""
-
+    
 # compose용 create_draft/submit_draft는 남겨도 되나 이번 스프린트에선 직접 호출 X (추후 RAG-주도 작성기 준비되면 재사용)
 # drafts -> 직원이 작성 중/제출 전 초안 저장
 # approvals -> 대표 inbox용 승인 요청 저장
@@ -177,6 +177,7 @@ def create_todo(approval_id: str, owner: str, title: str, due_at: Optional[str] 
     if due_at is None:
         due_at = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
         
+
     """승인 완료 시 후속 일정 생성"""
     response = supabase.table("todos").insert({
         "approval_id": approval_id,
@@ -240,6 +241,7 @@ def today_local_iso(tz_hours: int = 9) -> str:
 # 반려 문서 조회
 # -----------------------
 def get_user_rejected_requests(user_id: str) -> List[Dict[str, Any]]:
+
     """
     특정 직원의 반려된 요청 목록을 가져옵니다.
     """

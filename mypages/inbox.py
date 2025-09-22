@@ -85,12 +85,7 @@ def app(user):
 
             if approval["status"] == "대기중":
                 # Mock AI → 후속 업무 제안
-                approved_info = {
-                        "type": approval.get("type") or title,  # 안전 보정
-                        "creator_name": approval.get("creator_name", "담당 직원"),
-                        "title": title
-                    }
-                suggested_task = potens_client.generate_next_step_alert(approved_info) or "승인 후속 조치 확인"
+                suggested_task = mock_ai_generate_task(title, confirm_text)
 
                 
                 # 후속 업무 제안
@@ -131,6 +126,7 @@ def app(user):
                     with message_placeholder.container():
                         st.success(f"✅ 승인 완료!\n\n{alert_msg}\n마감일: **{due_date}**")
 
+
                     time.sleep(2)
                     st.rerun()
 
@@ -158,4 +154,3 @@ def mock_ai_generate_task(title: str, confirm_text: str = "") -> str:
     if "보고서" in text:
         return "보고서 관련 회계팀 서류 전달"
     return "승인 후속 조치 확인"
-

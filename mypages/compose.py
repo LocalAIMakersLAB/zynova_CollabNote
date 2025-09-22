@@ -1,49 +1,97 @@
+# mypages/compose.py
+from typing import Dict, List, Any, Optional
 import streamlit as st
-import json
 import db
-import potens_client
-from datetime import date
+from potens_client import (
+    infer_doc_type,
+    analyze_request_and_ask,
+    generate_confirm_text,
+)
 
-def run_compose_page(user):
-    st.header("📝 새로운 문서 업무 요청하기")
+# ---------------------------
+# Helpers
+# ---------------------------
+def _template_fields_list(template_obj: Dict[str, Any]) -> List[str]:
+    f = template_obj.get("fields", [])
+    if isinstance(f, dict):
+        # dict 안에 "required" 키만 있는 경우 → 그 값을 그대로 반환
+        if "required" in f and isinstance(f["required"], list):
+            return f["required"]
+        return list(f.keys())
+    if isinstance(f, list):
+        return [str(x) for x in f]
+    return []
 
-    # 세션 상태 초기화
-    if "compose_state" not in st.session_state:
+
+def _attach_keys_to_questions(template_fields: List[str], ask_list: List[Any]) -> List[Dict[str, str]]:
+    """
+    LLM이 만든 ask 항목에 key가 없다면, 질문문구에서 템플릿 필드명과 간단 매칭하여 key 부착.
+    결과 형식: [{"key": "...", "question": "..."}]
+    """
+    out: List[Dict[str, str]] = []
+    for item in (ask_list or []):
+        if isinstance(item, dict):
+            q = str(item.get("question", "")).strip()
+            k = item.get("key")
+        else:
+            q = str(item).strip()
+            k = None
+
+        if not k:
+            ql = q.lower().replace(" ", "")
+            cand = None
+            for f in template_fields:
+                fs = str(f)
+                if fs and fs.lower().replace(" ", "") in ql:
+                    cand = fs
+                    break
+            out.append({"key": cand, "question": q})
+        else:
+            out.append({"key": str(k), "question": q})
+    return out
+
+def _next_remaining_key(template_fields: List[str], filled_fields: Dict[str, Any]) -> Optional[str]:
+    """아직 채워지지 않은 필드 중 첫 번째 반환 (순서 필요 시 DB에서 리스트/정렬 메타 권장)"""
+    for f in template_fields:
+        if f not in filled_fields:
+            return f
+    return None
+
+
+# ---------------------------
+# Main Page
+# ---------------------------
+def run_compose_page(user: Dict[str, Any]):
+    st.header("📝 새 문서 요청")
+
+    # 초기화 (그대로)
+    if "compose_state" not in st.session_state or st.session_state.get("new_request", False):
         st.session_state.compose_state = {
-            "chat_history": [],
-            "current_draft_id": None,
+            "stage": "initial",
+            "chat_history": [
+                {"role": "assistant", "content": "안녕하세요! 어떤 문서를 작성하시겠어요? (예: 품의서, 연차 신청)"},
+            ],
+            "template": None,
             "filled_fields": {},
-            "is_template_selected": False,
-            "template_info": None,
-            "is_confirmed": False,
-            "last_missing_fields": [],
-            "last_questions": []
+            "questions_to_ask": [],
+            "last_asked": None,
+            "prefill": None,
+            "confirm_rendered": False,
         }
+        st.session_state.new_request = False
+
+        prefill = st.session_state.pop("compose_prefill", None)
+        if prefill:
+            st.session_state.compose_state["prefill"] = prefill
 
     state = st.session_state.compose_state
 
-    prefill = st.session_state.get("compose_prefill")
-    if prefill:
-        state["filled_fields"].update(prefill.get("filled_fields", {}))
-        doc_type = prefill.get("doc_type")
-        if doc_type:
-            tpl = db.get_templates_by_type(doc_type)
-            if tpl:
-                state["template_info"] = tpl
-                state["is_template_selected"] = True
-        # ✅ 한 번 반영 후 즉시 제거
-        del st.session_state["compose_prefill"]
-
-    # 챗봇 초기 메시지 (세션당 한 번)
-    if not state["chat_history"]:
-        state["chat_history"].append({"role": "bot", "message": "안녕하세요! 어떤 문서를 작성하시겠어요? 자유롭게 말씀해 주세요. (예: 품의서, 견적서, 연차 신청)"})
-        
-    # --- 채팅 UI 렌더링 (카톡풍 말풍선) ---
-    for chat in state["chat_history"]:
-        if chat["role"] == "bot":
+    # --- 기존 대화 렌더 (UI만 교체) ---
+    for msg in state["chat_history"]:
+        if msg["role"] == "assistant":
             st.markdown(
                 f"""
-                <div style="display:flex;justify-content:flex-start;margin:8px 0;">
+                <div style="display:flex;justify-content:flex-start;margin:6px 0;">
                   <div style="
                     background:#F2F3F5;
                     color:#111;
@@ -53,16 +101,16 @@ def run_compose_page(user):
                     max-width:70%;
                     word-wrap:break-word;
                     font-size:15px;">
-                    {chat['message']}
+                    {msg['content']}
                   </div>
                 </div>
                 """,
                 unsafe_allow_html=True
             )
-        else:
+        else:  # user
             st.markdown(
                 f"""
-                <div style="display:flex;justify-content:flex-end;margin:8px 0;">
+                <div style="display:flex;justify-content:flex-end;margin:6px 0;">
                   <div style="
                     background:#9FE8A8;
                     color:#000;
@@ -72,125 +120,195 @@ def run_compose_page(user):
                     max-width:70%;
                     word-wrap:break-word;
                     font-size:15px;">
-                    {chat['message']}
+                    {msg['content']}
                   </div>
                 </div>
                 """,
                 unsafe_allow_html=True
             )
 
-    # 챗봇 입력창 (GPT 스타일)
-    if not state["is_confirmed"]:
-        user_input = st.chat_input("챗봇에게 문서 정보를 알려주세요.", key="compose_chat_input")
-        if user_input:
-            state["chat_history"].append({"role": "user", "message": user_input})
+    # --- 사용자 입력 (UI 유지) ---
+    user_input = st.chat_input("요청 내용을 말씀해주세요...")
+    if user_input:
+        # 카톡풍 유저 말풍선 출력
+        st.markdown(
+            f"""
+            <div style="display:flex;justify-content:flex-end;margin:6px 0;">
+              <div style="
+                background:#9FE8A8;
+                color:#000;
+                padding:10px 14px;
+                border-radius:16px;
+                border-bottom-right-radius:2px;
+                max-width:70%;
+                word-wrap:break-word;
+                font-size:15px;">
+                {user_input}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        state["chat_history"].append({"role": "user", "content": user_input})
 
-            for chunk in user_input.split(","):
-                if ":" in chunk:
-                    k, v = chunk.split(":", 1)
-                    state["filled_fields"][k.strip()] = v.strip()
+        # ---------------- initial: 문서 타입 결정 + 질문 생성 ----------------
+        if state["stage"] == "initial":
+            with st.spinner("요청 내용을 분석 중입니다..."):
+                # 1) 전체 템플릿 목록
+                templates = db.get_templates()
+                # 2) 반려 재작성 프리필에 doc_type이 있으면 우선
+                pref = state.get("prefill") or {}
+                if pref.get("doc_type"):
+                    doc_type = pref["doc_type"]
+                else:
+                    doc_type = infer_doc_type(user_input, templates)
 
-            # --- RAG 기반 템플릿 추론 ---
-            if not state["is_template_selected"]:
-                all_templates = db.get_templates() # 모든 템플릿 정보 가져오기
-                inferred_template = potens_client.infer_doc_type_and_fields(user_input, all_templates)
-                
-                # 오류 수정: get_templates() 대신 get_template_by_type() 호출
-                state["template_info"] = db.get_templates_by_type(inferred_template['doc_type'])
-                if state["template_info"]:
-                    state["is_template_selected"] = True
-                    state["chat_history"].append({"role": "bot", "message": f"확인했습니다. **{state['template_info']['type']}** 작성을 도와드릴게요."})
+                # 3) 템플릿 객체 조회
+                template_obj = db.get_templates_by_type(doc_type)
+                if not template_obj:
+                    err = f"'{doc_type}'에 해당하는 템플릿을 찾지 못했습니다. 관리자에게 문의하세요."
+                    state["chat_history"].append({"role": "assistant", "content": err})
+                    st.rerun()
 
-                    template_fields = state["template_info"]['fields']
-                    with st.spinner("필수 항목을 파악 중입니다..."):
-                        questions_payload = potens_client.generate_questions(template_fields, {})
+                # guide_md 추가
+                guide_md = db.get_rag_context(doc_type)
+                if guide_md:
+                    template_obj["guide_md"] = guide_md
 
-                    # ★ 최초 질문/누락도 저장
-                    state["last_missing_fields"] = questions_payload.get('missing_fields', [])
-                    state["last_questions"] = questions_payload.get('ask', [])
 
-                    ask_list = state["last_questions"]
-                    if ask_list:
-                        questions_text = "\n".join([q['question'] for q in ask_list])
-                        state["chat_history"].append({"role":"bot","message": f"필수 항목을 파악했어요:\n{questions_text}\n\n예: `금액:120만원, 기한:2025-09-25` 처럼 입력하셔도 돼요."})
+                state["template"] = template_obj
+                template_fields = _template_fields_list(template_obj)
+
+                # 4) 첫 발화 분석 + 질문 생성(LLM)
+                analysis = analyze_request_and_ask(user_input, template_obj) or {}
+                filled = dict(analysis.get("filled_fields", {}))
+
+                # 5) 반려 재작성 프리필 병합
+                prefill_fields = (pref.get("filled_fields") or {})
+                if prefill_fields:
+                    filled.update(prefill_fields)
+                state["filled_fields"] = filled
+
+                # 6) 질문 큐 정규화(질문에 key 부착)
+                raw_ask = analysis.get("ask", []) or analysis.get("questions_to_ask", [])
+                ask_norm = _attach_keys_to_questions(template_fields, raw_ask)
+
+                # 7) key가 비어있는 질문은 남은 필드에서 순차로 부여
+                remaining = [f for f in template_fields if f not in state["filled_fields"]]
+                fixed_ask = []
+                for item in ask_norm:
+                    if not item.get("key"):
+                        item["key"] = remaining.pop(0) if remaining else None
+                    fixed_ask.append(item)
+                # None key 제거
+                state["questions_to_ask"] = [x for x in fixed_ask if x.get("key")]
+
+                # 8) 시작 멘트
+                start_msg = f"네, **{doc_type}** 작성을 시작하겠습니다."
+                state["chat_history"].append({"role": "assistant", "content": start_msg})
+
+                # 9) 질문 시작 or 즉시 확인 단계
+                if state["questions_to_ask"]:
+                    nxt = state["questions_to_ask"].pop(0)
+                    state["last_asked"] = nxt["key"]
+                    state["chat_history"].append({"role": "assistant", "content": nxt["question"]})
+                    state["stage"] = "gathering"
+                else:
+                    # 남은 필드가 있다면 기본 질문 생성, 없으면 확인
+                    remaining = [f for f in template_fields if f not in state["filled_fields"]]
+                    if remaining:
+                        nxt_key = remaining[0]
+                        state["last_asked"] = nxt_key
+                        state["chat_history"].append(
+                            {"role": "assistant", "content": f"'{nxt_key}' 값을 알려주세요."}
+                        )
+                        state["stage"] = "gathering"
                     else:
-                        # Fallback: required 목록을 직접 안내
-                        req = questions_payload.get("required_fields", [])
-                        pretty = ", ".join(req) if req else "(필수 항목 없음)"
-                        state["chat_history"].append({
-                            "role":"bot",
-                            "message": f"필수 항목 질문을 생성하지 못했어요. 아래 항목을 `키:값` 형태로 알려주세요.\n- 필요한 항목: {pretty}\n\n예: `금액:120만원, 기한:2025-09-25`"
-                        })
-                        
-            # --- 문서 필드 채우기 ---
-            else:
-                # LLM이 JSON 형식으로 필드 값을 추출
-                template_fields = state["template_info"]['fields']
-                extracted_data_payload = potens_client.generate_questions(template_fields, state["filled_fields"]) # mock에선 질문 생성
-                state["last_missing_fields"] = extracted_data_payload.get('missing_fields', [])
-                state["last_questions"] = extracted_data_payload.get('ask', [])
-
-
-                # 추출된 데이터를 state에 업데이트 (실제 LLM 연동 시 추출된 JSON을 파싱해야 함)
-                # 현재 mock 함수는 질문을 반환하므로, 간단한 로직으로 대체
-                if extracted_data_payload:
-                    missing = extracted_data_payload['missing_fields']
-                    if not missing:
-                        state["is_confirmed"] = True
-                        state["chat_history"].append({"role": "bot", "message": "모든 항목이 채워졌습니다. 컨펌 텍스트를 생성할 수 있어요."})
-                    else:
-                        questions_text = "\n".join([q['question'] for q in extracted_data_payload['ask']])
-                        state["chat_history"].append({"role": "bot", "message": f"현재 {', '.join(missing)} 항목이 비어 있어요. {questions_text}"})
-            
+                        state["stage"] = "confirm"
             st.rerun()
 
-    # --- 컨펌 텍스트 생성 및 제출 ---
-    if state["is_confirmed"]:
-        if st.button("컨펌 텍스트 생성"):
-            confirm_text = potens_client.generate_confirm_text(state["filled_fields"])
-            state["confirm_text"] = confirm_text
-            st.session_state.confirm_text = confirm_text
+        # ---------------- gathering: 마지막으로 물었던 key에 답을 매핑 ----------------
+        elif state["stage"] == "gathering":
+            with st.spinner("답변을 확인하고 있습니다..."):
+                template_fields = _template_fields_list(state["template"])
 
-            # 문서 초안 생성 함수 호출 위치 변경
-            # 문서가 모두 작성된 후에만 초안을 생성
-            created = db.create_draft(
-                user['user_id'],
-                state["template_info"]['type'],
-                state["filled_fields"],
-                state.get("last_missing_fields", []),
-                confirm_text
-            )
-            if not created:
-                st.error("초안 생성에 실패했습니다.")
-            else:
-                state["current_draft_id"] = created[0]["draft_id"]
+                # 1) 직전에 물었던 key에 매핑
+                last_key = state.get("last_asked")
+                if not last_key:
+                    last_key = _next_remaining_key(template_fields, state["filled_fields"])
+                if last_key:
+                    state["filled_fields"][last_key] = user_input.strip()
 
-            # 대표 선택 (여러 명일 경우)
-            rep_ids = db.get_rep_user_ids()
-            if not rep_ids:
-                st.error("대표 계정을 찾을 수 없습니다.")
-                st.stop()
-
-            # 직원에게 대표를 선택시키고 싶다면:
-            # (user_id 대신 이름을 보여주려면 별도 쿼리 필요)
-            selected_rep = st.selectbox("승인자(대표) 선택", rep_ids, index=0)
-
-
-            st.subheader("📄 컨펌 텍스트 미리보기")
-            st.info(confirm_text)
-            
-            if st.button("승인요청 제출"):
-                if not state.get("current_draft_id"):
-                    st.error("초안 정보가 없습니다. 컨펌 텍스트 생성 후 다시 시도해주세요.")
+                # 2) 다음 질문(우선 LLM이 만든 큐)
+                if state["questions_to_ask"]:
+                    nxt = state["questions_to_ask"].pop(0)
+                    state["last_asked"] = nxt["key"]
+                    state["chat_history"].append({"role": "assistant", "content": nxt["question"]})
                 else:
-                    db.submit_draft(
-                        draft_id=state["current_draft_id"],
-                        title=state["filled_fields"].get('title', '제목없음'),
-                        summary=confirm_text[:100] + "...",
-                        assignee=selected_rep,
-                        due_date=str(date.today()) 
+                    # LLM 큐가 비어도 남은 필드가 있으면 기본 질문으로 이어 묻기
+                    remaining = [f for f in template_fields if f not in state["filled_fields"]]
+                    if remaining:
+                        nxt_key = remaining[0]
+                        state["last_asked"] = nxt_key
+                        state["chat_history"].append(
+                            {"role": "assistant", "content": f"'{nxt_key}' 값을 알려주세요."}
+                        )
+                        # stage 유지(gathering)
+                    else:
+                        # 더 이상 질문이 없으면 확인 단계
+                        state["stage"] = "confirm"
+            st.rerun()
 
-                    )
-                    st.success("✅ 승인 요청이 제출되었습니다! 대표님의 확인을 기다려주세요.")
-                    st.session_state.compose_state = {}
-                    st.rerun()
+        # ---------------- confirm: (이전 버전 문제) 사용자 입력 없어도 자동 렌더가 되도록 아래로 이동 ----------------
+        # (의도적으로 비워둠; 아래의 '입력 외 영역'에서 처리)
+
+    # ---------------- 입력 유무와 무관하게 confirm 자동 렌더 ----------------
+    if state["stage"] == "confirm" and not state.get("confirm_rendered"):
+        with st.spinner("최종 보고서를 생성 중입니다..."):
+            doc_type = state["template"]["type"] if state.get("template") else "문서"
+            final_text = generate_confirm_text(state["filled_fields"], doc_type)
+            response = (
+                "모든 정보가 수집되었습니다. 아래 내용으로 제출할까요?\n\n"
+                "---\n"
+                f"{final_text}\n"
+                "---\n\n"
+                "하단 버튼을 눌러주세요."
+            )
+            state["chat_history"].append({"role": "assistant", "content": response})
+            state["stage"] = "submitted"
+            state["confirm_rendered"] = True
+        st.rerun()
+
+    # ---------------- submitted: 버튼 UI ----------------
+    if state["stage"] == "submitted":
+        col1, col2, col3 = st.columns([1,1,1])
+        with col1:
+            if st.button("🔁 처음부터 다시"):
+                st.session_state.new_request = True
+                st.rerun()
+        with col2:
+            if st.button("✏️ 일부 수정하기"):
+                template_fields = _template_fields_list(state["template"])
+                remaining = [f for f in template_fields if f not in state["filled_fields"]]
+                state["questions_to_ask"] = [{"key": k, "question": f"'{k}' 값을 알려주세요."} for k in remaining]
+                if state["questions_to_ask"]:
+                    nxt = state["questions_to_ask"].pop(0)
+                    state["last_asked"] = nxt["key"]
+                    state["chat_history"].append({"role": "assistant", "content": "수정할 내용을 이어서 입력해주세요."})
+                    state["chat_history"].append({"role": "assistant", "content": nxt["question"]})
+                    state["stage"] = "gathering"
+                    state["confirm_rendered"] = False
+                else:
+                    state["stage"] = "confirm"
+                    state["confirm_rendered"] = False
+                st.rerun()
+        with col3:
+            if st.button("🚀 승인 요청 제출"):
+                # TODO: 실제 저장 로직 연결
+                # req_id = db.create_request(...)
+                st.success("✅ 승인 요청이 성공적으로 준비되었습니다! (DB 저장 루틴 연결 필요)")
+                st.balloons()
+                st.session_state.new_request = True
+                st.rerun()
+
+
