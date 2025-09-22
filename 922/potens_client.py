@@ -9,8 +9,8 @@ from typing import Union
 from db import get_rag_context
 
 # --- API 설정 ---
-POTENS_API_URL = os.getenv("POTENS_API_URL", "https://ai.potens.ai/api/chat")
-POTENS_API_KEY = os.getenv("POTENS_API_KEY", "aQHcmBiey7arNK0EwNcSKMiRrzMXAXjU")
+POTENS_API_URL = os.getenv("POTENS_API_URL")
+POTENS_API_KEY = os.getenv("POTENS_API_KEY")
 HEADERS = {"Authorization": f"Bearer {POTENS_API_KEY}", "Content-Type": "application/json"}
 
 # --- LLM 호출 공통 함수 (최종 수정) ---
