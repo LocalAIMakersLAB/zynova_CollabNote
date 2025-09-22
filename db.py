@@ -13,6 +13,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+
 # ---------- 공통 ----------
 def now_utc_iso():
     return datetime.now(timezone.utc).isoformat()

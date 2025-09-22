@@ -20,8 +20,13 @@ def _safe_post(payload: dict) -> dict:
         r = requests.post(f"{POTENS_API_URL}/chat", headers=HEADERS, json=payload, timeout=TIMEOUT)
         r.raise_for_status()
         return r.json()
+    
     except Exception as e:
         return {"__error__": str(e)}
+        print("API에 전송되는 페이로드:")
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        res = _safe_post(payload)
+        
 
 # 1) 문서 유형 및 필드 추론
 def infer_doc_type_and_fields(user_utterance: str, templates: list[dict]):
