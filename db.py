@@ -305,3 +305,27 @@ def mark_notification_as_read(notification_id: str):
     """
     res = supabase.table("notifications").update({"read": True}).eq("notification_id", notification_id).execute()
     return res.data
+
+def get_draft_by_id(draft_id: str) -> Optional[Dict[str, Any]]:
+    res = supabase.table("drafts").select("*").eq("draft_id", draft_id).limit(1).execute()
+    return res.data[0] if res.data else None
+
+# 직원이 작성한 모든 문서의 승인 상태를 가져오는 함수
+def get_user_approvals_history(user_id: str) -> List[Dict[str, Any]]:
+    """
+    직원이 작성한 모든 문서의 승인 상태를 가져옵니다.
+    """
+    # 1. 직원이 작성한 drafts 목록 가져오기
+    res_drafts = supabase.table("drafts").select("draft_id, type").eq("creator", user_id).execute()
+    drafts_data = {d["draft_id"]: d["type"] for d in res_drafts.data}
+    if not drafts_data:
+        return []
+    
+    # 2. drafts와 연결된 approvals 목록 가져오기
+    res_approvals = supabase.table("approvals").select("draft_id, title, status, decided_at, created_at").in_("draft_id", list(drafts_data.keys())).order("created_at", desc=True).execute()
+    
+    # 3. approvals 데이터에 문서 타입 정보 추가
+    for approval in res_approvals.data:
+        approval["doc_type"] = drafts_data.get(approval["draft_id"], "알 수 없음")
+        
+    return res_approvals.data or []

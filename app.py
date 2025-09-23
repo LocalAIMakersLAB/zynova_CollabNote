@@ -33,7 +33,7 @@ def show_login():
     st.title("🔐 로그인")
     email = st.text_input("이메일")
     pw = st.text_input("비밀번호", type="password")
-    c1, c2 = st.columns(2)
+    c1, c2 = st.columns([5,1])
     with c1:
         if st.button("로그인"):
             user = login_profile(email, pw)
@@ -55,7 +55,7 @@ def show_register():
     role  = st.radio("역할", ["대표(rep)", "직원(staff)"], horizontal=True)
     role_value = "rep" if "대표" in role else "staff"
     pw = st.text_input("비밀번호", type="password")
-    c1, c2 = st.columns(2)
+    c1, c2 = st.columns([5,1])
     with c1:
         if st.button("가입"):
             ok, msg = register_profile(name, email, role_value, pw)
@@ -91,13 +91,14 @@ def show_main():
         
         selected_page = st.sidebar.radio(
             "메뉴를 선택해주세요.",
-            ("📝 새 문서 요청", "❌ 반려된 문서")
+            ("📝 새 문서 요청", "📊 대시보드")
         )
         
         if selected_page == "📝 새 문서 요청":
             compose.run_compose_page(st.session_state.user)
-        elif selected_page == "❌ 반려된 문서":
-            rejected_requests.run_rejected_requests_page(st.session_state.user)
+        elif selected_page == "📊 대시보드":
+            dashboard.app(user)
+            st.sidebar.info("내 문서 현황을 확인할 수 있습니다.")
 
     if st.sidebar.button("로그아웃"):
         st.session_state.user = None

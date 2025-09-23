@@ -13,6 +13,54 @@ import potens_client
 # ---------------------------
 # Helpers
 # ---------------------------
+
+# --- NEW: 질문 감지 ---
+QUESTION_TRIGGERS = ("?", "알려줘", "무엇", "뭐가", "어떻게", "어떤", "필수", "항목", "field", "가이드")
+
+def _is_user_question(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+    t = text.strip().lower()
+    return t.endswith("?") or any(k in t for k in QUESTION_TRIGGERS)
+
+# --- NEW: 질문에 바로 답해주기 ---
+def _answer_user_question(user_q: str, template_obj: dict, filled: dict) -> str:
+    # 템플릿 필수 항목 정리
+    required = _template_fields_list(template_obj)
+    missing = [k for k in required if k not in filled]
+    guide = template_obj.get("guide_md") or "(가이드 없음)"
+
+    # 사용자가 “필수/항목/가이드/필드” 류를 물으면 규칙 기반 즉답 (LLM 호출 없이 빠름)
+    ql = user_q.lower()
+    if any(x in ql for x in ["필수", "항목", "field", "가이드", "무엇이", "뭐가", "어떤 항목"]):
+        bullets = "\n".join([f"- {k}" for k in required]) or "- (정의된 항목 없음)"
+        filled_view = "\n".join([f"- {k}: {filled[k]}" for k in required if k in filled]) or "- (아직 없음)"
+        missing_view = "\n".join([f"- {k}" for k in missing]) or "- (없음)"
+        return (
+            f"**이 문서에 필요한 필수 항목 목록**\n{bullets}\n\n"
+            f"**현재 채워진 항목**\n{filled_view}\n\n"
+            f"**남은 항목(미기입)**\n{missing_view}\n\n"
+            f"**가이드(요약)**\n{guide}"
+        )
+
+    # 그 외 일반 질문은 LLM로 간단 Q&A (컨텍스트 = 템플릿/가이드/이미 채운 값)
+    import potens_client
+    prompt = f"""
+    당신은 회사 행정 서식 도우미입니다. 아래 템플릿과 가이드를 참고해 사용자의 질문에 간결히 답하세요.
+    - 문서 종류: {template_obj.get('type','(미정)')}
+    - 필수 항목: {_template_fields_list(template_obj)}
+    - 현재 입력된 값: {filled}
+    - 가이드: {guide}
+
+    질문: "{user_q}"
+    답변 규칙:
+    - 한국어로, 3~6줄 내외로 간결하게.
+    - 목록이 적절하면 bullet로.
+    """
+    return potens_client._call_potens_llm(prompt).strip()
+
+
+
 def _template_fields_list(template_obj: Dict[str, Any]) -> List[str]:
     f = template_obj.get("fields", [])
     if isinstance(f, dict):
@@ -234,6 +282,15 @@ def run_compose_page(user: Dict[str, Any]):
         # ---------------- gathering: 마지막으로 물었던 key에 답을 매핑 ----------------
         elif state["stage"] == "gathering":
             with st.spinner("답변을 확인하고 있습니다..."):
+
+                # --- NEW: 사용자가 질문을 했으면, 값 매핑 전에 즉답 후 흐름 유지 ---
+                if _is_user_question(user_input):
+                    ans = _answer_user_question(user_input, state["template"], state["filled_fields"])
+                    state["chat_history"].append({"role": "assistant", "content": ans})
+                    # stage/gathering 유지, last_asked 유지 → 바로 다음 입력을 기다림
+                    st.rerun()
+
+                
                 template_fields = _template_fields_list(state["template"])
 
                 # 1) 직전에 물었던 key에 매핑
@@ -378,7 +435,7 @@ def run_compose_page(user: Dict[str, Any]):
                 else:
                     st.error("DB 저장에 실패했습니다.")
 
-    # ---------------- 제출 성공 메시지 유지 ----------------
+    # ———————— 제출 성공 메시지 유지 ————————
     if st.session_state.get("last_submit_success"):
         st.success("✅ 승인 요청이 제출되었습니다!")
         st.session_state["last_submit_success"] = False
