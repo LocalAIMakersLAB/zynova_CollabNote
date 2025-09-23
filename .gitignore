@@ -6,12 +6,18 @@ __pycache__/
 dist/
 build/
 
-# Virtual Environment
+# Python venv
 .venv/
 .venv_ibm/
 env/
 ENV/
+
+# dotenv 파일
 .env
+
+# Streamlit secrets (절대 올리면 안 됨)
+.streamlit/secrets.toml
+
 # VSCode 설정
 .vscode/
 

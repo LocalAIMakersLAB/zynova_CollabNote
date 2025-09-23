@@ -1,16 +1,17 @@
 import os
+import streamlit as st
 from typing import Dict, List, Optional, Any
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 from supabase import create_client
 import bcrypt
 from datetime import datetime, timedelta, timezone
 from potens_client import generate_approval_summary
 
 # .env 불러오기
-load_dotenv()
+# load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_URL / SUPABASE_KEY not configured")

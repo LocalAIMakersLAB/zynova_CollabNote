@@ -2,19 +2,22 @@ import os, json, requests
 import streamlit as st
 from typing import Optional, List, Dict, Any, Union, Tuple
 from mypages.utils_llm import backoff_sleep, try_parse_json, normalize_keys, validate_keys  # 있으면 사용
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 
-load_dotenv()
+# load_dotenv()
 
 # ========== Env ==========
-APP_MODE = os.getenv("APP_MODE", "live").lower()      # live | mock
-POTENS_API_STYLE = os.getenv("POTENS_API_STYLE", "chat").lower()  # chat | prompt
-POTENS_API_URL = os.getenv("POTENS_API_URL")
-POTENS_API_KEY = os.getenv("POTENS_API_KEY")
+APP_MODE = st.secrets.get("APP_MODE", "live").lower()      # live | mock
+POTENS_API_STYLE = st.secrets.get("POTENS_API_STYLE", "chat").lower()  # chat | prompt
+POTENS_API_URL = st.secrets["POTENS_API_URL"]
+POTENS_API_KEY = st.secrets["POTENS_API_KEY"]
 
-REQUEST_TIMEOUT_CONNECT = int(os.getenv("POTENS_TIMEOUT_CONNECT_SEC", "6"))
-REQUEST_TIMEOUT_READ    = int(os.getenv("POTENS_TIMEOUT_READ_SEC", "12"))
-MAX_RETRIES             = int(os.getenv("POTENS_MAX_RETRIES", "2"))
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+
+REQUEST_TIMEOUT_CONNECT = int(st.secrets.get("POTENS_TIMEOUT_CONNECT_SEC", "6"))
+REQUEST_TIMEOUT_READ    = int(st.secrets.get("POTENS_TIMEOUT_READ_SEC", "12"))
+MAX_RETRIES             = int(st.secrets.get("POTENS_MAX_RETRIES", "2"))
 
 HEADERS = {"Authorization": f"Bearer {POTENS_API_KEY}", "Content-Type": "application/json"}
 
