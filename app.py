@@ -77,8 +77,8 @@ def show_main():
     
     # 대표(rep)만 볼 수 있는 메뉴
     if user['role'] == 'rep':
-        page = st.sidebar.radio("대표 메뉴", ("📬 승인함", "📊 대시보드"))
-        if page == "📬 승인함":
+        page = st.sidebar.radio("대표 메뉴", ("📬 문서 승인 처리", "📬  승인 문서함"))
+        if page == "📬 문서 승인 처리":
             st.sidebar.info("대표님용 문서 승인 처리 페이지입니다.")
             inbox.app(user)
         else:
@@ -91,12 +91,12 @@ def show_main():
         
         selected_page = st.sidebar.radio(
             "메뉴를 선택해주세요.",
-            ("📝 새 문서 요청", "📊 대시보드")
+            ("📝 새 문서 요청", "📊 내 문서함")
         )
         
         if selected_page == "📝 새 문서 요청":
             compose.run_compose_page(st.session_state.user)
-        elif selected_page == "📊 대시보드":
+        elif selected_page == "📊 내 문서함":
             dashboard.app(user)
             st.sidebar.info("내 문서 현황을 확인할 수 있습니다.")
 

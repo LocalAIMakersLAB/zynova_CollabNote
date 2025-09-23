@@ -1,27 +1,31 @@
+from ddgs import DDGS
 import os, json, requests
 import streamlit as st
 from typing import Optional, List, Dict, Any, Union, Tuple
 from mypages.utils_llm import backoff_sleep, try_parse_json, normalize_keys, validate_keys  # 있으면 
-from duckduckgo_search import DDGS
+
 # from dotenv import load_dotenv
 
 # load_dotenv()
 
 # ========== Env ==========
-APP_MODE = st.secrets.get("APP_MODE", "live").lower()      # live | mock
-POTENS_API_STYLE = st.secrets.get("POTENS_API_STYLE", "chat").lower()  # chat | prompt
-POTENS_API_URL = st.secrets["POTENS_API_URL"]
-POTENS_API_KEY = st.secrets["POTENS_API_KEY"]
-
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+# st.secrets.get()을 사용하여 변수 호출 시 오류 방지
+APP_MODE = st.secrets.get("APP_MODE", "live").lower()
+POTENS_API_STYLE = st.secrets.get("POTENS_API_STYLE", "chat").lower()
+POTENS_API_URL = st.secrets.get("POTENS_API_URL")
+POTENS_API_KEY = st.secrets.get("POTENS_API_KEY")
+SUPABASE_URL = st.secrets.get("SUPABASE_URL")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
 
 REQUEST_TIMEOUT_CONNECT = int(st.secrets.get("POTENS_TIMEOUT_CONNECT_SEC", "6"))
-REQUEST_TIMEOUT_READ    = int(st.secrets.get("POTENS_TIMEOUT_READ_SEC", "12"))
-MAX_RETRIES             = int(st.secrets.get("POTENS_MAX_RETRIES", "2"))
+REQUEST_TIMEOUT_READ = int(st.secrets.get("POTENS_TIMEOUT_READ_SEC", "12"))
+MAX_RETRIES = int(st.secrets.get("POTENS_MAX_RETRIES", "2"))
 
+# 환경 변수가 없을 때 오류를 내도록 명시적인 체크 추가
+if not POTENS_API_URL or not POTENS_API_KEY:
+    raise RuntimeError("POTENS_API_URL or POTENS_API_KEY not configured in secrets.toml")
+    
 HEADERS = {"Authorization": f"Bearer {POTENS_API_KEY}", "Content-Type": "application/json"}
-
 # ========== 공통 호출기 ==========
 def _http_post_json(url: str, payload: dict) -> Tuple[Optional[dict], Optional[str]]:
     """성공 시 (json, None), 실패 시 (None, error_str) 반환"""
@@ -419,3 +423,13 @@ def generate_rejection_note(rejection_memo: str, creator_name: str, doc_title: s
     """
     return _call_potens_llm(prompt)
 
+
+def web_search_duckduckgo(query: str, max_results: int = 3) -> list[dict]:
+    """DuckDuckGo에서 웹검색 결과를 가져옵니다."""
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+            return results
+    except Exception as e:
+        print(f"❌ 검색 오류: {e}")
+        return []

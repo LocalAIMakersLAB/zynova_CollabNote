@@ -239,6 +239,7 @@
 # pdfkit==1.0.0
 # Torchvision==0.22.1
 
+ddgs==9.6.0
 streamlit
 supabase
 python-dotenv

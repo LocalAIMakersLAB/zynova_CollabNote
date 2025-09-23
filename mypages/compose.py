@@ -58,12 +58,20 @@ def _answer_user_question(user_q: str, template_obj: dict, filled: dict) -> str:
     - 목록이 적절하면 bullet로.
     """ 
     ans = potens_client._call_potens_llm(prompt).strip()
-    
-    # 3단계: LLM 답변이 너무 짧거나 "모르겠습니다" 류라면 → 검색 API로 보완
-    if not ans or len(ans) < 10 or any(x in ans for x in ["모르", "알 수", "없습니다"]):
-        search_results = potens_client.web_search_duckduckgo(user_q, max_results=2)
+
+    # 3단계: 외부 지식 필요 여부 판단
+    needs_search = (
+        not ans or len(ans) < 20 or
+        any(x in ql for x in ["가격", "얼마", "비용", "시세", "최신", "뉴스", "법", "규정", "알려", "찾아"]) or
+        any(x in ans for x in ["모르", "없습니다", "찾지 못"])
+    )
+    if needs_search:
+        query = user_q
+        if any(x in ql for x in ["가격","비용","얼마","시세"]):
+            query += " 평균 가격 원화"
+        search_results = potens_client.web_search_duckduckgo(query, max_results=3)
+
         if search_results:
-            # 검색 결과를 LLM에게 컨텍스트로 다시 물어보기
             ctx = "\n".join([
                 f"- {r.get('title')}: {r.get('body','')} ({r.get('href')})"
                 for r in search_results
@@ -74,12 +82,13 @@ def _answer_user_question(user_q: str, template_obj: dict, filled: dict) -> str:
 
             {ctx}
 
-            검색 결과를 참고하여 한국어로 3~5줄 이내로 답하세요.
+            검색 결과를 참고하여 한국어로 3~6줄 이내로 답하세요.
+            - 가능하면 수치/날짜/법규 등 구체적인 사실을 포함하세요.
+            - 무관한 결과라면 '검색 결과에서 관련 정보를 찾지 못했습니다.' 라고만 답하세요.
             """
             ans = potens_client._call_potens_llm(search_prompt).strip()
 
-    return ans   
-
+    return ans
 
 
 def _template_fields_list(template_obj: Dict[str, Any]) -> List[str]:
@@ -460,4 +469,3 @@ def run_compose_page(user: Dict[str, Any]):
     if st.session_state.get("last_submit_success"):
         st.success("✅ 승인 요청이 제출되었습니다!")
         st.session_state["last_submit_success"] = False
-

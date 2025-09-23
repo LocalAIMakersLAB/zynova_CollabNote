@@ -194,9 +194,10 @@ def create_todo(approval_id: str, owner: str, title: str, due_at: Optional[str] 
     }).execute()
     return response.data
 
-def get_todos(owner_id: str) -> List[Dict[str, Any]]:
-    response = supabase.table("todos").select("*").eq("owner", owner_id).order("due_at").execute()
+def get_todos(user_id: str) -> List[Dict[str, Any]]:
+    response = supabase.table("todos").select("*").eq("owner", user_id).order("due_at").execute()
     return response.data or []
+
 
 # --- Todo 업데이트 (done 토글) ---
 def set_todo_done(todo_id: str, done: bool = True):
@@ -329,3 +330,28 @@ def get_user_approvals_history(user_id: str) -> List[Dict[str, Any]]:
         approval["doc_type"] = drafts_data.get(approval["draft_id"], "알 수 없음")
         
     return res_approvals.data or []
+
+# -----------------------
+# 직원 프로필 조회
+# -----------------------
+def get_profiles():
+    """
+    profiles 테이블에서 직원 목록 조회
+    return: [{ "user_id": "...", "name": "...", "email": "...", "role": "staff" }, ...]
+    """
+    response = supabase.table("profiles").select("user_id, name, email, role").execute()
+    return response.data
+
+
+
+def get_user_inbox(assignee_id: str, status: str = "승인완료") -> List[Dict[str, Any]]:
+    """특정 대표가 승인한 문서 목록 가져오기"""
+    res = (
+        supabase.table("approvals")
+        .select("*")
+        .eq("assignee", assignee_id)
+        .eq("status", status)
+        .order("decided_at", desc=True)  # 승인 완료일 기준 최신순
+        .execute()
+    )
+    return res.data or []

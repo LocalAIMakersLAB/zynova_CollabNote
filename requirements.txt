@@ -5,3 +5,4 @@ requests
 psycopg2-binary
 bcrypt
 duckduckgo-search==8.1.1
+ddgs==9.6.0

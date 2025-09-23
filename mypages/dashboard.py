@@ -10,52 +10,44 @@ def app(user: Dict[str, Any]):
         render_staff_dashboard(user)
 
 def render_rep_dashboard(user: Dict[str, Any]):
-    st.title("📊 대표 대시보드 — To-Do")
-    # 대표용 대시보드 로직 (기존 코드와 유사)
-    todos = db.get_todos(user["user_id"]) or []
-    open_todos = [t for t in todos if not t.get("done")]
-    done_todos = [t for t in todos if t.get("done")]
+    st.title("📊 승인 완료 문서")
+    st.markdown("대표님이 승인한 문서 목록입니다.")
 
-    st.markdown(f"**진행 중:** {len(open_todos)}개 · **완료:** {len(done_todos)}개")
-    tab_open, tab_done = st.tabs(["🟢 진행 중", "✅ 완료"])
+    # '승인완료' 상태인 문서만 가져오기
+    approved_docs = db.get_user_inbox(user["user_id"], "승인완료") or []
 
-    with tab_open:
-        if not open_todos:
-            st.info("진행 중인 할 일이 없습니다.")
-        else:
-            for t in sorted(open_todos, key=lambda x: str(x.get("due_at") or "")):
-                with st.container():
-                    title = t.get("title", "(제목 없음)")
-                    due = str(t.get("due_at") or "").split("T")[0]
-                    st.markdown(f"**{title}** ·  마감일: `{due}`")
-                    c1, c2 = st.columns([1, 5])
-                    with c1:
-                        if st.button("완료 처리", key=f"done-{t['todo_id']}"):
-                            db.set_todo_done(t["todo_id"], True)
-                            st.success("완료로 이동했습니다.")
-                            st.rerun()
-                    with c2:
-                        st.caption(f"todo_id: {t['todo_id']} · approval_id: {t.get('approval_id','-')}")
-                    st.divider()
+    # 모든 직원 프로필을 가져와 ID를 키로 하는 딕셔너리로 변환
+    profiles = db.get_profiles()
+    profile_map = {p["user_id"]: p["name"] for p in profiles}
 
-    with tab_done:
-        if not done_todos:
-            st.info("완료된 항목이 없습니다.")
-        else:
-            for t in sorted(done_todos, key=lambda x: str(x.get("due_at") or ""), reverse=True):
-                with st.container():
-                    title = t.get("title", "(제목 없음)")
-                    due = str(t.get("due_at") or "").split("T")[0]
-                    st.markdown(f"**{title}** ·  마감일: `{due}`")
-                    c1, c2 = st.columns([1, 5])
-                    with c1:
-                        if st.button("되돌리기", key=f"undone-{t['todo_id']}"):
-                            db.set_todo_done(t["todo_id"], False)
-                            st.info("다시 진행 중으로 이동했습니다.")
-                            st.rerun()
-                    with c2:
-                        st.caption(f"todo_id: {t['todo_id']} · approval_id: {t.get('approval_id','-')}")
-                    st.divider()
+    if not approved_docs:
+        st.info("아직 승인 완료된 문서가 없습니다.")
+        return
+
+    tab_all, tab_summary = st.tabs(["모든 문서", "요약"])
+
+    with tab_all:
+        for doc in approved_docs:
+            # creator_id를 사용하여 작성자 이름 찾기
+            creator_id = doc.get("creator_id")
+            creator_name = profile_map.get(creator_id, "알 수 없음")
+            
+            with st.expander(f"✅ **{doc['title']}** (작성자: {creator_name})"):
+                st.markdown(f"**승인일:** {str(doc.get('decided_at', '')).split('T')[0]}")
+                st.markdown(f"**요약:** {doc.get('summary', '-')}")
+                with st.expander("원본 문서 전체 내용 보기"):
+                    st.markdown(doc.get('confirm_text', ''))
+                st.divider()
+
+    with tab_summary:
+        st.info("요약 탭은 추후 개발 예정입니다.")
+
+
+    # with tab_summary:
+    #     st.markdown(f"**총 {len(approved_docs)}건의 문서가 승인되었습니다.**")
+    #     for doc in approved_docs:
+    #         st.markdown(f"- **{doc['title']}** (작성자: {doc.get('creator_name', '알 수 없음')})")
+    #         st.markdown(f"  - 요약: {doc.get('summary', '-')}")
 
 
 def render_staff_dashboard(user: Dict[str, Any]):
