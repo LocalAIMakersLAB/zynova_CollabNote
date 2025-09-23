@@ -32,6 +32,7 @@ def _answer_user_question(user_q: str, template_obj: dict, filled: dict) -> str:
 
     # 사용자가 “필수/항목/가이드/필드” 류를 물으면 규칙 기반 즉답 (LLM 호출 없이 빠름)
     ql = user_q.lower()
+    # 1단계: 기본 규칙 기반 답변 시도
     if any(x in ql for x in ["필수", "항목", "field", "가이드", "무엇이", "뭐가", "어떤 항목"]):
         bullets = "\n".join([f"- {k}" for k in required]) or "- (정의된 항목 없음)"
         filled_view = "\n".join([f"- {k}: {filled[k]}" for k in required if k in filled]) or "- (아직 없음)"
@@ -42,9 +43,8 @@ def _answer_user_question(user_q: str, template_obj: dict, filled: dict) -> str:
             f"**남은 항목(미기입)**\n{missing_view}\n\n"
             f"**가이드(요약)**\n{guide}"
         )
-
+    # 2단계: LLM으로 답변 시도
     # 그 외 일반 질문은 LLM로 간단 Q&A (컨텍스트 = 템플릿/가이드/이미 채운 값)
-    import potens_client
     prompt = f"""
     당신은 회사 행정 서식 도우미입니다. 아래 템플릿과 가이드를 참고해 사용자의 질문에 간결히 답하세요.
     - 문서 종류: {template_obj.get('type','(미정)')}
@@ -56,8 +56,29 @@ def _answer_user_question(user_q: str, template_obj: dict, filled: dict) -> str:
     답변 규칙:
     - 한국어로, 3~6줄 내외로 간결하게.
     - 목록이 적절하면 bullet로.
-    """
-    return potens_client._call_potens_llm(prompt).strip()
+    """ 
+    ans = potens_client._call_potens_llm(prompt).strip()
+    
+    # 3단계: LLM 답변이 너무 짧거나 "모르겠습니다" 류라면 → 검색 API로 보완
+    if not ans or len(ans) < 10 or any(x in ans for x in ["모르", "알 수", "없습니다"]):
+        search_results = potens_client.web_search_duckduckgo(user_q, max_results=2)
+        if search_results:
+            # 검색 결과를 LLM에게 컨텍스트로 다시 물어보기
+            ctx = "\n".join([
+                f"- {r.get('title')}: {r.get('body','')} ({r.get('href')})"
+                for r in search_results
+            ])
+            search_prompt = f"""
+            사용자가 "{user_q}" 라고 물었습니다.
+            아래는 검색 결과 요약입니다:
+
+            {ctx}
+
+            검색 결과를 참고하여 한국어로 3~5줄 이내로 답하세요.
+            """
+            ans = potens_client._call_potens_llm(search_prompt).strip()
+
+    return ans   
 
 
 

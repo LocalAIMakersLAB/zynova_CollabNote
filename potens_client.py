@@ -1,7 +1,8 @@
 import os, json, requests
 import streamlit as st
 from typing import Optional, List, Dict, Any, Union, Tuple
-from mypages.utils_llm import backoff_sleep, try_parse_json, normalize_keys, validate_keys  # 있으면 사용
+from mypages.utils_llm import backoff_sleep, try_parse_json, normalize_keys, validate_keys  # 있으면 
+from duckduckgo_search import DDGS
 # from dotenv import load_dotenv
 
 # load_dotenv()
@@ -194,7 +195,16 @@ def analyze_request_and_ask(user_utterance: str, template: dict) -> dict:
     """
     return _call_potens_llm(prompt, is_json=True)
 
-
+def web_search_duckduckgo(query: str, max_results: int = 3) -> list[dict]:
+    """DuckDuckGo에서 웹검색 결과를 가져옵니다."""
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+            return results
+    except Exception as e:
+        print(f"❌ 검색 오류: {e}")
+        return []
+    
 # def infer_doc_type_and_fields(user_utterance: str, templates: List[dict]) -> dict:
 #     """
 #     우리 함수 호환: {"doc_type": str, "required": [str]}
