@@ -76,27 +76,31 @@ def app(user):
                     key=f"due-{approval_id}"
                 )
 
-                # --- 후속 담당자 토글 ---
+                # — 후속 담당자 토글 —
                 employees = db.get_profiles()
                 staff_employees = [e for e in employees if e.get("role") == "staff"]
-                selected_assignees = []
 
                 if staff_employees:
-                    st.markdown("📌 후속 담당자 지정 (체크하여 선택, 안함 선택 가능)")
+                    st.markdown("📌 후속 담당자 지정 (토글에서 선택 가능, '선택 안함' 포함)")
 
-                    # 선택 안함 체크박스
-                    select_none_key = f"assignee-{approval_id}-none"
-                    select_none = st.checkbox("선택 안함", key=select_none_key)
-                    
-                    # staff 체크박스
-                    for staff in staff_employees:
-                        staff_name = staff["name"]
-                        staff_key = f"assignee-{approval_id}-{staff_name}"
-                        if st.checkbox(staff_name, key=staff_key) and not select_none:
-                            selected_assignees.append(staff_name)
+                    # staff 이름 리스트 + 선택 안함 옵션
+                    staff_names = ["선택 안함"] + [s["name"] for s in staff_employees]
+
+                    selected_assignee = st.selectbox(
+                        "후속 담당자 선택",
+                        staff_names,
+                        key=f"assignee-{approval_id}"
+                    )
+
+                    # 선택된 결과 정리
+                    if selected_assignee == "선택 안함":
+                        selected_assignees = []
+                    else:
+                        selected_assignees = [selected_assignee]
+
                 else:
                     st.warning("⚠️ 후속 담당자로 지정할 staff가 없습니다.")
-                    select_none = True  # staff 없으면 자동 선택 안함
+                    selected_assignees = []
 
                 # --- 승인 버튼 ---
                 if st.button("✅ 승인", key=f"approve-btn-{approval_id}"):
