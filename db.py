@@ -175,23 +175,28 @@ def get_rep_user_id() -> Optional[str]:
 # -----------------------
 # 후속 일정 (Todo)
 # -----------------------
-def create_todo(approval_id: str, owner: str, title: str, due_at: Optional[str] = None):
+def create_todo(approval_id: str, owner: str, title: str, due_at: Optional[str] = None, detail=None):
     """
-    todos: (todo_id, approval_id, owner, title, due_at timestamptz, done bool)
+    todos: (todo_id, approval_id, owner, title, due_at timestamptz, done bool, detail text?)
     due_at: ISO8601 문자열 권장 (예: '2025-09-25T09:00:00+09:00')
     """
     if due_at is None:
         due_at = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
-        
 
-    """승인 완료 시 후속 일정 생성"""
-    response = supabase.table("todos").insert({
+    # 기본 데이터
+    data = {
         "approval_id": approval_id,
         "owner": owner,
         "title": title,
         "due_at": due_at,
         "done": False
-    }).execute()
+    }
+
+    # detail 컬럼이 있다면 포함
+    if detail:
+        data["detail"] = detail
+
+    response = supabase.table("todos").insert(data).execute()
     return response.data
 
 def get_todos(user_id: str) -> List[Dict[str, Any]]:
@@ -323,7 +328,14 @@ def get_user_approvals_history(user_id: str) -> List[Dict[str, Any]]:
         return []
     
     # 2. drafts와 연결된 approvals 목록 가져오기
-    res_approvals = supabase.table("approvals").select("draft_id, title, status, decided_at, created_at").in_("draft_id", list(drafts_data.keys())).order("created_at", desc=True).execute()
+    res_approvals = (
+        supabase.table("approvals")
+        # 🔑 reject_reason 포함해서 조회
+        .select("draft_id, title, status, decided_at, created_at, reject_reason")
+        .in_("draft_id", list(drafts_data.keys()))
+        .order("created_at", desc=True)
+        .execute()
+    )
     
     # 3. approvals 데이터에 문서 타입 정보 추가
     for approval in res_approvals.data:
@@ -331,7 +343,6 @@ def get_user_approvals_history(user_id: str) -> List[Dict[str, Any]]:
         
     return res_approvals.data or []
 
-# -----------------------
 # 직원 프로필 조회
 # -----------------------
 def get_profiles():

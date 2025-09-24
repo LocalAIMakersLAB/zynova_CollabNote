@@ -134,11 +134,15 @@ def render_rep_dashboard(user: Dict[str, Any]):
 
 def render_staff_dashboard(user: Dict[str, Any]):
     st.title("📊 내 문서 현황")
-    st.markdown("내가 제출한 문서들의 처리 현황입니다.")
+    st.markdown("내가 제출한 문서들의 처리 현황 및 담당자로 배정된 업무를 확인할 수 있습니다.")
     
     # 직원의 문서 승인 기록 가져오기
+    # (A) 내가 제출한 문서 히스토리
     history = db.get_user_approvals_history(user['user_id']) or []
 
+    # (B) 내가 담당자로 배정된 Todo
+    assigned_todos = db.get_todos(user['user_id']) or []
+    
     if not history:
         st.info("아직 제출한 문서가 없습니다. '새 문서 요청' 페이지에서 문서를 작성해보세요.")
         return
@@ -209,3 +213,16 @@ def render_staff_dashboard(user: Dict[str, Any]):
                     draft_info = db.get_draft_by_id(doc['draft_id'])
                     if draft_info:
                         st.text(draft_info.get('confirm_text', '내용 없음'))
+
+    st.markdown("---")
+    st.subheader("📌 담당자로 지정된 후속 업무")
+    if not assigned_todos:
+        st.info("현재 배정된 후속 업무가 없습니다.")
+    else:
+        for todo in assigned_todos:
+            with st.expander(f"📄 {todo['title']} (마감일: {str(todo['due_at']).split('T')[0]})"):
+                st.caption("대표 승인 후 배정된 업무입니다.")
+                if st.button("✅ 완료", key=f"done-{todo['todo_id']}"):
+                    db.set_todo_done(todo['todo_id'])
+                    st.success("업무를 완료 처리했습니다.")
+                    st.rerun()

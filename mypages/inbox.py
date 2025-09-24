@@ -101,39 +101,62 @@ def app(user):
                 else:
                     st.warning("⚠️ 후속 담당자로 지정할 staff가 없습니다.")
                     selected_assignees = []
-
+                    
                 # --- 승인 버튼 ---
                 if st.button("✅ 승인", key=f"approve-btn-{approval_id}"):
-                    # 1) 승인 상태 업데이트
                     db.update_approval_status(approval_id, "승인완료")
 
+                    draft = db.get_draft(approval["draft_id"])
+                    creator_id = draft.get("creator") if draft else None
+                    creator_profile = db.get_profile(creator_id) if creator_id else {}
+                    creator_name = creator_profile.get("name", "알 수 없음")
+                    confirm_text = (draft.get("confirm_text") or "").strip()
+
+                    due_at_str = due_date.isoformat()
+
+                    # LLM 기반 후속 조치 문구
+                    alert_msg = potens_client.generate_next_step_alert({
+                        "type": title,
+                        "creator_name": creator_name,
+                        "title": title,
+                        "due_date": due_at_str
+                    }) or f"'{title}' 승인 완료 – 후속 조치 필요"
+
                     if selected_assignees:
-                        # 선택된 담당자에게 알림
                         employee_map = {e["name"]: e["user_id"] for e in staff_employees}
                         for assignee in selected_assignees:
-                            db.create_notification(
-                                user_id=employee_map[assignee],
-                                message=f"'{title}' 요청이 승인되었습니다. 해당 업무가 {assignee}님께 위임되었습니다. 📅 마감일: {due_date}"
+                            assignee_id = employee_map[assignee]
+
+                            # ✅ 직원 Todo
+                            db.create_todo(
+                                approval_id=approval_id,
+                                owner=assignee_id,
+                                # 제목에 후속업무(alert_msg)를 직접 넣음
+                                title=f"{creator_name}님의 요청 – {alert_msg}",
+                                due_at=due_at_str
                             )
-                        st.success(f"✅ 승인 완료! 문서 마감일과 후속 담당자 {', '.join(selected_assignees)}에게 전달되었습니다.\n📅 마감일: **{due_date}**")
+
+                            # 알림 전송
+                            db.create_notification(
+                                user_id=assignee_id,
+                                message=(
+                                    f"📌 {creator_name}님이 제출한 '{title}' 요청이 대표 승인되었습니다.\n\n"
+                                    f"➡️ 후속업무: {alert_msg}\n"
+                                    f"📅 마감일: {due_at_str}"
+                                )
+                            )
+
+                        st.success(f"✅ 승인 완료! {', '.join(selected_assignees)}에게 후속업무가 전달되었습니다.")
+
                     else:
-                        # 선택 안함 → 대표 Todo 생성
-                        alert_msg = potens_client.generate_next_step_alert({
-                            "type": title,
-                            "creator_name": approval.get("creator_name", "담당 직원"),
-                            "title": title
-                        }) or "승인을 완료했습니다. 후속 조치를 진행해주세요."
-                        
-                        # 날짜는 문자열로 변환
-                        due_at_str = due_date.isoformat()
-                        
+                        # ✅ 담당자 없으면 대표 Todo만 생성
                         db.create_todo(
                             approval_id=approval_id,
-                            owner=user["user_id"],  # 대표
-                            title=alert_msg,
+                            owner=user["user_id"],  # 대표 본인
+                            title=f"[대표 Todo] {alert_msg}",
                             due_at=due_at_str
                         )
-                        st.success(f"✅ 승인 완료! 후속 담당자가 지정되지 않아 대표 Todo로 등록되었습니다.\n📅 마감일: **{due_date}**")
+                        st.success(f"✅ 승인 완료! 후속 담당자가 없어 대표님 Todo로 등록되었습니다.")
 
                 # --- 반려 버튼 ---
                 reject_reason = st.text_input("반려 사유 입력", key=f"reason-{approval_id}")
@@ -155,3 +178,4 @@ def app(user):
 
     else:
         st.info("✅ 오늘의 승인 처리는 모두 끝났습니다!")
+
