@@ -1,3 +1,6 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 import streamlit as st
 import db
 from typing import Dict, List, Any
@@ -41,6 +44,85 @@ def render_rep_dashboard(user: Dict[str, Any]):
 
     with tab_summary:
         st.info("요약 탭은 추후 개발 예정입니다.")
+
+        # ✅ 한글 폰트 설정 (Mac 기본: AppleGothic)
+        plt.rc("font", family="AppleGothic")
+        plt.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
+
+        # 샘플 데이터 (승인 문서 + 지출처)
+        data = [
+            {"title": "자재보고서", "status": "승인완료", "destination": "협력사 A"},
+            {"title": "자재보고서", "status": "승인완료", "destination": "협력사 A"},
+            {"title": "운영비 보고", "status": "승인완료", "destination": "전기요금"},
+            {"title": "운영비 보고", "status": "승인완료", "destination": "사무실 관리비"},
+            {"title": "운영비 보고", "status": "승인완료", "destination": "전기요금"},
+            {"title": "품의서", "status": "승인완료", "destination": "사내 복지"},
+            {"title": "품의서", "status": "승인완료", "destination": "사내 복지"},
+            {"title": "품의서", "status": "승인완료", "destination": "교육비"},
+            {"title": "견적서", "status": "승인완료", "destination": "장비 구입"},
+            {"title": "견적서", "status": "승인완료", "destination": "장비 구입"},
+        ]
+
+        df = pd.DataFrame(data)
+
+        # ✅ 승인완료만 필터링
+        approved_df = df[df["status"] == "승인완료"]
+
+        # ✅ 지출처별 집계
+        counts = approved_df["destination"].value_counts()
+
+        st.subheader("💸 승인된 지출처 요약")
+
+        # --- 원 그래프 ---
+        fig1, ax1 = plt.subplots(figsize=(4, 4))  # ✅ 크기 줄임
+        ax1.pie(counts, labels=counts.index, autopct="%1.1f%%", startangle=90)
+        ax1.axis("equal")
+        st.pyplot(fig1)
+
+        # ✅ 샘플 데이터 (date 컬럼 추가)
+        data = [
+            {"title": "품의", "status": "승인완료", "date": "2025-09-01"},
+            {"title": "품의", "status": "승인완료", "date": "2025-09-10"},
+            {"title": "연차", "status": "승인완료", "date": "2025-09-12"},
+            {"title": "연차", "status": "승인완료", "date": "2025-09-15"},
+            {"title": "지출 결의서", "status": "승인완료", "date": "2025-09-18"},
+            {"title": "제안서", "status": "승인완료", "date": "2025-09-20"},
+            {"title": "제안서", "status": "승인완료", "date": "2025-09-21"},
+        ]
+
+        df = pd.DataFrame(data)
+        df["date"] = pd.to_datetime(df["date"])  # ✅ 날짜 변환
+
+        # ✅ 이번 달만 필터링
+        today = pd.Timestamp.today()
+        this_month_df = df[
+            (df["date"].dt.year == today.year) &
+            (df["date"].dt.month == today.month)
+        ]
+
+        # ✅ 이번 달 문서 건수 집계
+        counts = this_month_df["title"].value_counts()
+
+        # --- 막대 그래프 ---
+        fig2, ax2 = plt.subplots(figsize=(5,3))
+        counts.plot(kind="bar", ax=ax2, color="skyblue")
+
+        # ✅ y축 라벨/제목
+        ax2.set_ylabel("승인 건수")
+        ax2.set_title("이번 달 문서별 승인 건수")
+
+        # ✅ x축 라벨 가로로 (세로 → 가로)
+        ax2.set_xticklabels(counts.index, rotation=0)
+
+        # ✅ x축 제목 제거
+        ax2.set_xlabel("")
+        
+        # ✅ y축을 5단위로 설정
+        max_count = counts.max()
+        ax2.set_yticks(np.arange(0, max_count + 5, 5))
+        
+
+        st.pyplot(fig2)
 
 
     # with tab_summary:
