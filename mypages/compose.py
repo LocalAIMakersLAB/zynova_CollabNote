@@ -321,7 +321,7 @@ def run_compose_page(user: Dict[str, Any]):
         st.session_state.compose_state = {
             "stage": "initial",
             "chat_history": [
-                {"role": "assistant", "content": "안녕하세요! 어떤 문서를 작성하시겠어요? (예: 품의서, 연차 신청)"},
+                {"role": "assistant", "content": "안녕하세요! 어떤 문서를 작성하시겠어요? (예: 품의, 연차, 견적, 기술 기안서)"},
             ],
             "template": None,
             "filled_fields": {},
