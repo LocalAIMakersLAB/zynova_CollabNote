@@ -44,7 +44,7 @@ def show_login():
             else:
                 st.error("이메일/비밀번호가 올바르지 않습니다.")
     with c2:
-        if st.button("회원가입으로"):
+        if st.button("회원가입"):
             st.session_state.page = "register"
             st.rerun()
 
@@ -66,7 +66,7 @@ def show_register():
             else:
                 st.error(msg)
     with c2:
-        if st.button("로그인으로"):
+        if st.button("로그인"):
             st.session_state.page = "login"
             st.rerun()
             
